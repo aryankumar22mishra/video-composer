@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
+import { createComposition, createCompositionClip } from './state/composition'
+import { loadAssetMetadata } from './assets/AssetManager'
+import { findActiveClip, drawFrame, seekAndDrawVideo } from './renderer/CompositionRenderer'
 
 const API_BASE = '/api'
 
@@ -22,8 +25,14 @@ function App() {
   const [clipPreviews, setClipPreviews] = useState([])
   const [activeTab, setActiveTab] = useState('videos')
   const [timelineItems, setTimelineItems] = useState([]) // sequence of { clipIndex, uid }
+  const [composition, setComposition] = useState(createComposition())
+  const [assetMetadata, setAssetMetadata] = useState([])
+  const [previewImages, setPreviewImages] = useState({}) // { clipIndex: HTMLImageElement }
+  const [previewVideos, setPreviewVideos] = useState({}) // { clipIndex: HTMLVideoElement }
   const videoRef = useRef(null)
   const dragIndexRef = useRef(null)
+  const hiddenVideoRefs = useRef({})
+  const canvasRef = useRef(null)
 
   const estimatedDuration = Math.max(timelineItems.length * imageDuration, audioFile ? 12 : 0)
   const totalDuration = duration || estimatedDuration
@@ -60,6 +69,97 @@ function App() {
     }
   }, [clips])
 
+  // Load real browser-side metadata (dimensions/duration) for each clip
+  useEffect(() => {
+    let cancelled = false
+
+    Promise.all(clips.map((file) => loadAssetMetadata(file).catch((err) => {
+      console.error(err)
+      return null
+    }))).then((results) => {
+      if (!cancelled) setAssetMetadata(results)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [clips])
+
+  // Build <img> elements for image clips so the canvas can draw them
+  useEffect(() => {
+    const newImages = {}
+    let pending = 0
+
+    clips.forEach((file, index) => {
+      if (!file.type.startsWith('image/')) return
+      pending += 1
+      const img = new window.Image()
+      img.onload = () => {
+        newImages[index] = img
+        pending -= 1
+        if (pending === 0) setPreviewImages({ ...newImages })
+      }
+      img.src = clipPreviews[index]
+    })
+
+    if (pending === 0) setPreviewImages({ ...newImages })
+  }, [clips, clipPreviews])
+
+  // Build hidden <video> elements for video clips so the canvas can draw frames from them
+  useEffect(() => {
+    const createdUrls = []
+
+    clips.forEach((file, index) => {
+      if (!file.type.startsWith('video/')) return
+      if (hiddenVideoRefs.current[index]) return // already created
+
+      const url = URL.createObjectURL(file)
+      createdUrls.push(url)
+
+      const video = document.createElement('video')
+      video.src = url
+      video.muted = true
+      video.preload = 'auto'
+      video.playsInline = true
+      hiddenVideoRefs.current[index] = video
+      setPreviewVideos((prev) => ({ ...prev, [index]: video }))
+    })
+
+    return () => {
+      createdUrls.forEach((url) => URL.revokeObjectURL(url))
+    }
+  }, [clips])
+
+  // Draw the active clip (image or video frame) onto the canvas whenever
+  // the playhead time or composition changes
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+
+    const activeClip = findActiveClip(composition, currentTime)
+    if (!activeClip) {
+      drawFrame(ctx, canvas, null)
+      return
+    }
+
+    const file = clips[activeClip.fileIndex]
+    const timeWithinClip = currentTime - activeClip.startTime
+
+    if (file?.type.startsWith('image/')) {
+      const image = previewImages[activeClip.fileIndex]
+      drawFrame(ctx, canvas, image)
+    } else if (file?.type.startsWith('video/')) {
+      const video = previewVideos[activeClip.fileIndex]
+      if (video) {
+        seekAndDrawVideo(video, ctx, canvas, timeWithinClip)
+      }
+    }
+  }, [currentTime, composition, previewImages, previewVideos, clips])
+
+  // Reset the "known" video duration whenever the timeline sequence changes,
+  // so the timeline width recalculates from the new sequence instead of
+  // staying locked to a previously rendered video's duration.
   useEffect(() => {
     setDuration(0)
   }, [timelineItems])
@@ -146,10 +246,45 @@ function App() {
       ...prev,
       { clipIndex, uid: `${clipIndex}-${Date.now()}-${Math.random()}` },
     ])
+    setComposition((prev) => {
+      const videoTrack = prev.tracks[0]
+      const startTime = videoTrack.clips.reduce((sum, clip) => sum + clip.duration, 0)
+      const file = clips[clipIndex]
+      const newClip = createCompositionClip(file, clipIndex, startTime, imageDuration)
+      return {
+        ...prev,
+        duration: startTime + imageDuration,
+        tracks: [
+          { ...videoTrack, clips: [...videoTrack.clips, newClip] },
+          prev.tracks[1],
+        ],
+      }
+    })
   }
 
   const removeFromTimeline = (uid) => {
-    setTimelineItems((prev) => prev.filter((item) => item.uid !== uid))
+    setTimelineItems((prev) => {
+      const removeIndex = prev.findIndex((item) => item.uid === uid)
+      if (removeIndex === -1) return prev
+      return prev.filter((item) => item.uid !== uid)
+    })
+
+    setComposition((prev) => {
+      // Rebuild clip list from scratch to keep startTime values correct after removal
+      const videoTrack = prev.tracks[0]
+      const remaining = videoTrack.clips.filter((clip) => clip.id !== uid)
+      let runningTime = 0
+      const relaid = remaining.map((clip) => {
+        const updated = { ...clip, startTime: runningTime }
+        runningTime += clip.duration
+        return updated
+      })
+      return {
+        ...prev,
+        duration: runningTime,
+        tracks: [{ ...videoTrack, clips: relaid }, prev.tracks[1]],
+      }
+    })
   }
 
   const handleDragStart = (index) => {
@@ -285,11 +420,12 @@ function App() {
                   accept="image/*,video/*"
                   multiple
                   onChange={(event) => {
-                    setClips(Array.from(event.target.files || []))
-                    setTimelineItems([])
+                    const newFiles = Array.from(event.target.files || [])
+                    setClips((prev) => [...prev, ...newFiles])
                     setCurrentTime(0)
                     setError('')
                     setActiveTab('videos')
+                    event.target.value = '' // allow re-selecting the same file(s) again later
                   }}
                 />
               </label>
@@ -337,28 +473,27 @@ function App() {
           </div>
         </div>
 
-        {job ? (
-          <div className="result-content compact">
-            {job.error_message && <p className="message error">{job.error_message}</p>}
-            {outputVideoUrl && (
-              <video
-                ref={videoRef}
-                className="output-video compact"
-                src={outputVideoUrl}
-                onLoadedMetadata={handleVideoMetadata}
-                onTimeUpdate={handleVideoTimeUpdate}
-                onSeeked={handleVideoSeeked}
-                onPlay={() => setIsPlaying(true)}
-                onPause={() => setIsPlaying(false)}
-                onEnded={() => setCurrentTime(duration)}
-              />
-            )}
-            {!outputVideoUrl && job.status === 'completed' && (
-              <p className="message warning">The job completed without an output video URL.</p>
-            )}
-          </div>
-        ) : (
-          <p className="empty-state">Your generated video will appear here.</p>
+        <div className="canvas-preview-wrapper">
+          <canvas ref={canvasRef} width="1280" height="720" className="canvas-preview" />
+          <p className="canvas-preview-label">Live preview</p>
+        </div>
+
+        {job?.error_message && <p className="message error">{job.error_message}</p>}
+
+        {job?.status === 'completed' && outputVideoUrl && (
+          <a
+            className="primary-button download-link"
+            href={outputVideoUrl}
+            download
+            target="_blank"
+            rel="noreferrer"
+          >
+            ⬇ Download video
+          </a>
+        )}
+
+        {job?.status === 'completed' && !outputVideoUrl && (
+          <p className="message warning">The job completed without an output video URL.</p>
         )}
 
         {(timelineItems.length > 0 || audioFile) && (
