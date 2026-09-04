@@ -1,16 +1,77 @@
-# React + Vite
+# Video Composer — Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A **React 19** single-page application built with **Vite 8**. It provides the user interface for uploading video/image clips, configuring composition settings, monitoring job progress, and previewing the finished video — complete with an interactive timeline view.
 
-Currently, two official plugins are available:
+## Requirements
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **Node.js** 18+ (tested with 20+)
+- **npm** (ships with Node.js)
 
-## React Compiler
+## Setup
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+cd video-composer-frontend
+npm install
+```
 
-## Expanding the Oxlint configuration
+## Run the development server
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+```bash
+cd video-composer-frontend
+npm run dev
+# → http://localhost:5173
+```
+
+The frontend expects the Django backend to be running on `http://localhost:8000`. Requests to `/api/*` and `/media/*` are proxied automatically via the Vite config — no additional setup needed.
+
+## Available scripts
+
+| Command | Description |
+|---|---|
+| `npm run dev` | Start Vite dev server with HMR |
+| `npm run build` | Production build to `dist/` |
+| `npm run preview` | Preview the production build locally |
+| `npm run lint` | Run Oxlint static analysis |
+
+## Features
+
+- **Upload panel** — select multiple image/video clips and an optional audio file
+- **Duration control** — set how many seconds each image clip should display
+- **Job submission** — sends multipart form data to the backend API
+- **Live status polling** — automatically refreshes job state every 2 seconds
+- **Video player** — preview the rendered output once complete
+- **Interactive timeline** — visual track display, play/pause, seek, and zoom controls
+
+## Proxy configuration (Vite)
+
+From `vite.config.js`:
+
+```js
+server: {
+  proxy: {
+    '/api':    { target: 'http://localhost:8000', changeOrigin: true },
+    '/media':  { target: 'http://localhost:8000', changeOrigin: true },
+  },
+}
+```
+
+This means all API and media requests from the React app are forwarded to the Django backend, avoiding CORS issues during development.
+
+## Project structure
+
+```
+video-composer-frontend/
+├── public/
+│   ├── favicon.svg
+│   └── icons.svg
+├── src/
+│   ├── assets/
+│   ├── App.css          # Component styles (dark theme, timeline)
+│   ├── App.jsx          # Main application component
+│   ├── index.css        # Global base styles
+│   └── main.jsx         # React entry point
+├── dist/                # Production build output
+├── index.html           # SPA shell
+├── vite.config.js       # Vite configuration
+├── package.json         # Dependencies & scripts
+└── README.md            # ← you are here

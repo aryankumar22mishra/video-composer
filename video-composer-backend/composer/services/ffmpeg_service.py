@@ -32,7 +32,7 @@ class VideoComposerService:
     def _image_to_clip(self, image_path, duration, resolution="1280x720"):
         clip_path = os.path.join(self.work_dir, f"{uuid.uuid4().hex}.mp4")
         cmd = [
-            "ffmpeg", "-y", "-stream_loop", "-1", "-i", image_path,
+            "ffmpeg", "-y", "-loop", "1", "-i", image_path,
             "-t", str(duration), "-vf", f"scale={resolution}", "-r", "30",
             "-c:v", "libx264", "-pix_fmt", "yuv420p", clip_path,
         ]
@@ -67,10 +67,20 @@ class VideoComposerService:
         with open(list_file, "w") as f:
             for seg in segments:
                 f.write(f"file '{seg}'\n")
-        concatenated = os.path.join(self.work_dir, f"{uuid.uuid4().hex}.mp4")
+
+        concatenated = os.path.join(
+            self.work_dir,
+            f"{uuid.uuid4().hex}.mp4"
+        )
+
         cmd = [
-            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-            "-i", list_file, "-c", "copy", concatenated,
+            "ffmpeg",
+            "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", list_file,
+            "-c", "copy",
+            concatenated,
         ]
         self._run(cmd)
         return concatenated

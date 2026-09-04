@@ -1,242 +1,223 @@
-# Video Composer
+# Mini AI Video Composer
 
-A local video composition application with a Django REST backend and a React frontend.
-Users upload images or videos, optionally add audio, and start a background render job. FFmpeg creates the final MP4 video.
+A full-stack app that composes videos from uploaded images/clips and an
+optional audio track. The backend processes video in the background using
+Celery + Redis + FFmpeg, while a React frontend lets users upload files,
+track job progress, and preview the result on a timeline.
 
-## Project Structure
-
-```text
+```
 new project/
-|-- README.md
-|-- video-composer-backend/
-|   |-- manage.py
-|   |-- composer/
-|   |-- video_composer/
-|   |-- media/
-|   |-- venv/
-|-- video-composer-frontend/
-    |-- src/
-    |-- package.json
-    |-- vite.config.js
+├── video-composer-backend/     ← Django + DRF + Celery + FFmpeg
+└── video-composer-frontend/    ← React (Vite)
 ```
 
-## Technology
+---
 
-- Django 4.2
-- Django REST Framework
-- Celery 5.4
-- Redis
-- FFmpeg
-- React with Vite
-- SQLite for local development
+## Tech Stack
 
-## Requirements
+| Layer | Technology |
+|---|---|
+| Backend Framework | Django 4.2.x + Django REST Framework |
+| Background Jobs | Celery (worker pool: `--pool=solo`, **required on Windows**) |
+| Message Broker | Redis |
+| Media Processing | FFmpeg (invoked via subprocess) |
+| Database | SQLite (dev) |
+| Frontend | React 18 + Vite |
+| Language | Python 3.12 / JavaScript |
 
-Install or configure these tools before running the project:
+---
 
-- Python
-- Node.js and npm
-- Redis server
-- FFmpeg
+## How It Works, End to End
 
-The Python dependencies are listed in:
+1. User opens the React dashboard and uploads clips (images/videos) plus
+   optional audio through a form.
+2. The frontend sends a `POST /api/jobs/` request. The Django API creates a
+   `ComposeJob` record with status `pending`, saves the uploaded files, and
+   immediately returns `202 Accepted` — it does **not** wait for the video
+   to be generated.
+3. The request also hands the job off to a Celery background task.
+4. A Celery worker (running separately) picks up the task:
+   - Sets the job to `processing`
+   - Converts each image into a short video segment (`image_duration`
+     seconds), and normalizes any video clips (resolution/framerate/codec)
+   - Concatenates all segments in order using FFmpeg
+   - Overlays the audio track, if provided
+   - Sets the job to `completed` (with a link to the output video) or
+     `failed` (with an error message)
+5. The React frontend polls `GET /api/jobs/{id}/` every 2 seconds while the
+   job is `pending`/`processing`, and displays the final video once it's
+   `completed`.
+6. The frontend also shows a timeline (video/audio tracks + playhead) that
+   stays in sync with the video player through one shared `currentTime`
+   value — the video updates it while playing, the playhead position is
+   calculated from it, and clicking the timeline seeks the video.
 
-```text
-video-composer-backend/requirements.txt
+---
+
+## Backend
+
+### Data Models
+
+**`ComposeJob`**
+- `id` — UUID, primary key
+- `status` — `pending` → `processing` → `completed` / `failed`
+- `audio` — optional audio file
+- `image_duration` — seconds each image clip is shown for (default: 3)
+- `output_video` — final rendered video file
+- `error_message` — populated if the job fails
+- `created_at` / `updated_at` — timestamps
+
+**`Clip`**
+- `job` — foreign key to `ComposeJob`
+- `file` — the uploaded image or video file
+- `order` — position in the final video sequence
+
+### API Endpoints
+
+All routes are under `/api/jobs/` (DRF `DefaultRouter`):
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/jobs/` | Upload clips + optional audio, starts a background job |
+| `GET` | `/api/jobs/` | List all jobs |
+| `GET` | `/api/jobs/{id}/` | Get one job's status/details |
+| `DELETE` | `/api/jobs/{id}/` | Delete a job |
+
+**`POST` request format** (`multipart/form-data`):
+- `clips` — one or more files (images/videos)
+- `audio` — single audio file (optional)
+- `image_duration` — seconds per image (optional, default 3)
+
+**Response codes:**
+- `202 Accepted` — job created and queued (not `201`, since the resource
+  — the finished video — isn't ready yet)
+- `400 Bad Request` — no clips provided
+
+### Architecture Notes
+
+- **Video composition logic is isolated** in
+  `composer/services/ffmpeg_service.py` behind a single
+  `compose(clip_paths, audio_path, output_path)` method. An AI-based video
+  generator can later be swapped in behind the same interface without
+  changing the API or view layer.
+- **Processing is fully asynchronous.** The original version ran FFmpeg
+  synchronously inside the HTTP request, blocking the server on large jobs.
+  This was refactored to use Celery + Redis so the API responds instantly
+  and a background worker does the actual work.
+
+---
+
+## Frontend
+
+Single-page React app (`src/App.jsx`) covering:
+
+- **Upload form** — clips, optional audio, image duration
+- **Job polling** — checks job status every 2 seconds while
+  `pending`/`processing`, stops once `completed`/`failed`
+- **Render result panel** — shows job ID, status badge, error message (if
+  failed), and the final video once ready
+- **Timeline editor** — VIDEO/AUDIO tracks, playhead, play/pause, zoom
+  in/out, click-to-seek — all driven by one shared `currentTime` state so
+  the video and timeline always stay in sync
+
+`vite.config.js` proxies `/api` and `/media` requests to
+`http://localhost:8000` during development, so the frontend can talk to
+the Django backend without CORS issues.
+
+---
+
+## ⚠️ Critical Windows Note: Celery Worker Pool
+
+Celery's default worker pool (`prefork`) relies on Unix-style process
+forking, which Windows does not support the same way. Running the worker
+without `--pool=solo` causes every spawned worker process to crash
+immediately with `PermissionError: [WinError 5] Access is denied` — tasks
+get accepted ("received") but never actually run, leaving jobs stuck on
+`pending` forever.
+
+**Always start the worker with `--pool=solo` on Windows:**
+```powershell
+python -m celery -A video_composer worker -l info --pool=solo
 ```
 
-## Backend Setup
+---
 
-Open a terminal and run:
+## Local Setup (Windows)
+
+### 1. Backend setup
 
 ```powershell
-cd "C:\new project\video-composer-backend"
+cd video-composer-backend
+python -m venv venv
 .\venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 python manage.py migrate
+python manage.py createsuperuser   # optional, for /admin/
 ```
 
-## Run Redis
+Make sure **FFmpeg** is installed and on PATH (`ffmpeg -version` should work).
 
-Open another terminal:
+### 2. Frontend setup
 
 ```powershell
-cd "C:\new project\video-composer-backend"
+cd video-composer-frontend
+npm install
+```
+
+### 3. Running everything — 4 terminals needed
+
+**Terminal 1 — Redis**
+```powershell
 & "C:\Program Files\Redis\redis-server.exe" "C:\Program Files\Redis\redis.windows.conf"
 ```
 
-If Redis reports that port `6379` is already in use, Redis is already running. Do not start a second Redis process.
-
-## Run Django
-
-Open another terminal:
-
+**Terminal 2 — Django server**
 ```powershell
-cd "C:\new project\video-composer-backend"
+cd video-composer-backend
 .\venv\Scripts\Activate.ps1
 python manage.py runserver
 ```
 
-The backend API will be available at:
-
-```text
-http://127.0.0.1:8000/
-```
-
-## Run Celery
-
-Open another terminal:
-
+**Terminal 3 — Celery worker**
 ```powershell
-cd "C:\new project\video-composer-backend"
+cd video-composer-backend
 .\venv\Scripts\Activate.ps1
 python -m celery -A video_composer worker -l info --pool=solo
 ```
 
-The `--pool=solo` option is important on Windows. It avoids the permission errors that can occur with Celery's default worker pool.
-
-A successful worker startup includes:
-
-```text
-Connected to redis://localhost:6379/0
-celery@... ready.
-```
-
-## Run the Frontend
-
-Open another terminal:
-
+**Terminal 4 — Frontend dev server**
 ```powershell
-cd "C:\new project\video-composer-frontend"
-$env:Path = "C:\Program Files\nodejs;" + $env:Path
-& "C:\Program Files\nodejs\node.exe" .\node_modules\vite\bin\vite.js
+cd video-composer-frontend
+npm run dev
 ```
 
-Open the URL shown by Vite, usually:
+Then open the frontend URL shown in Terminal 4 (typically `http://localhost:5173`).
 
-```text
-http://localhost:5173/
-```
+---
 
-If port `5173` is busy, Vite may use `5174` instead.
+## Verified So Far
 
-## Using the Application
+- ✅ Backend: models, serializers, admin, URLs, FFmpeg composition service
+- ✅ Synchronous version tested end-to-end (upload → completed video)
+- ✅ Refactored to async processing with Celery + Redis
+- ✅ Confirmed `202 Accepted` returned immediately with `status: "pending"`
+- ✅ Confirmed background worker completes jobs (`pending` → `completed`
+  in ~1.7s without blocking the initial request)
+- ✅ Frontend: upload form, job polling, and timeline/video sync all working
+- ✅ Diagnosed and fixed a real Windows Celery bug (`--pool=solo` requirement)
 
-1. Open the frontend URL.
-2. Select one or more image or video clips.
-3. Optionally select an audio file.
-4. Set the image duration in seconds.
-5. Click `Compose video`.
-6. Watch the job status change from `pending` to `processing`.
-7. When the job is complete, play the generated video in the result panel.
+---
 
-## API Endpoints
+## Known Gaps / Next Steps
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| GET | `/api/jobs/` | List jobs |
-| POST | `/api/jobs/` | Upload clips and create a render job |
-| GET | `/api/jobs/<id>/` | Read one job and its status |
-| DELETE | `/api/jobs/<id>/` | Delete a job |
-
-The upload endpoint returns `202 Accepted` because the video is rendered asynchronously.
-
-## Job Statuses
-
-```text
-pending -> processing -> completed
-                         or failed
-```
-
-- `pending`: the job is waiting for Celery.
-- `processing`: the worker is running FFmpeg.
-- `completed`: the output video was created.
-- `failed`: the render failed and the error is saved on the job.
-
-## Frontend Development
-
-Install frontend dependencies:
-
-```powershell
-cd "C:\new project\video-composer-frontend"
-& "C:\Program Files\nodejs\npm.cmd" install
-```
-
-Build the frontend:
-
-```powershell
-& "C:\Program Files\nodejs\npm.cmd" run build
-```
-
-Run lint:
-
-```powershell
-& "C:\Program Files\nodejs\npm.cmd" run lint
-```
-
-The Vite development proxy forwards these paths to Django:
-
-- `/api` -> `http://localhost:8000`
-- `/media` -> `http://localhost:8000`
-
-## Backend Validation
-
-Run Django's system check:
-
-```powershell
-cd "C:\new project\video-composer-backend"
-.\venv\Scripts\Activate.ps1
-python manage.py check
-```
-
-## Common Problems
-
-### The API shows JSON instead of the UI
-
-Use the frontend root URL:
-
-```text
-http://localhost:5173/
-```
-
-The following URL is an API and intentionally returns JSON:
-
-```text
-http://localhost:5173/api/jobs/
-```
-
-### Redis port is already in use
-
-This usually means Redis is already running on port `6379`. Leave the existing Redis process running and start only Celery.
-
-### Jobs remain pending
-
-Check that Redis and Celery are both running. Start Celery with:
-
-```powershell
-python -m celery -A video_composer worker -l info --pool=solo
-```
-
-### FFmpeg image render fails
-
-Supported image formats include JPG, JPEG, PNG, BMP, WEBP, and AVIF. The backend converts still images into video clips using the selected image duration.
-
-## Media Files
-
-Uploaded files are stored under:
-
-```text
-video-composer-backend/media/uploads/
-```
-
-Rendered videos are stored under:
-
-```text
-video-composer-backend/media/outputs/
-```
-
-Temporary FFmpeg files are stored under:
-
-```text
-video-composer-backend/media/tmp/
-```
+- ❌ **No authentication** — the API is currently open to anyone
+- ❌ **No automated tests** — `tests.py` is still empty; needs coverage for
+  job creation, the pending → processing → completed flow, and failure
+  handling
+- ❌ **No cleanup of temporary files** after processing completes
+- ❌ **File validation is extension-based only**, not real content/MIME-type
+  checking
+- ❌ **No retry strategy decided** for transient vs. genuine processing
+  failures
+- 🔲 Production hardening not yet done: environment variables, Postgres
+  instead of SQLite, proper Redis/Celery deployment config
