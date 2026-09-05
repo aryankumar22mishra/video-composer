@@ -246,10 +246,19 @@ class VideoComposerService:
         self,
         clip_paths,
         image_duration,
+        clip_durations=None,
     ):
+        """Normalize every clip into a uniform segment.
+
+        ``clip_durations`` optionally carries one duration per clip (same
+        order as ``clip_paths``). Images always use ``image_duration``;
+        videos use their per-clip duration when available and fall back to
+        ``image_duration`` only for legacy callers that did not send
+        ``clip_durations``.
+        """
         segments = []
 
-        for path in clip_paths:
+        for index, path in enumerate(clip_paths):
 
             if not os.path.exists(path):
                 raise FFmpegError(
@@ -277,9 +286,17 @@ class VideoComposerService:
 
             elif ext in VIDEO_EXTENSIONS:
 
+                video_duration = image_duration
+                if clip_durations and index < len(clip_durations):
+                    requested = clip_durations[index]
+                    if isinstance(requested, (int, float)) and requested > 0:
+                        video_duration = requested
+
+                print(f"[Compose] clip {index + 1} video duration={video_duration}")
+
                 segment = self._normalize_clip(
                     path,
-                    image_duration,
+                    video_duration,
                 )
 
                 segments.append(segment)
@@ -437,6 +454,7 @@ class VideoComposerService:
         audio_path,
         output_path,
         image_duration=3,
+        clip_durations=None,
     ):
         """
         Compose images/videos into one video.
@@ -445,8 +463,10 @@ class VideoComposerService:
 
             3 clips × 3 seconds = 9 seconds
 
-        Both images and videos are normalized to
-        the requested duration.
+        Images are normalized to ``image_duration``. Videos use their
+        per-clip duration from ``clip_durations`` (same order as
+        ``clip_paths``) when provided; when ``clip_durations`` is None
+        (legacy callers), videos fall back to ``image_duration``.
         """
 
         if not clip_paths:
@@ -464,6 +484,7 @@ class VideoComposerService:
         segments = self._prepare_segments(
             clip_paths,
             image_duration,
+            clip_durations,
         )
 
         # Step 2:

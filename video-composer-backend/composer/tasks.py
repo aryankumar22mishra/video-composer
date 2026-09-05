@@ -9,7 +9,15 @@ from .services.ffmpeg_service import FFmpegError, VideoComposerService
 
 
 @shared_task
-def compose_job_task(job_id):
+def compose_job_task(job_id, clip_durations=None):
+    """
+    Compose the job's clips into one video.
+
+    ``clip_durations`` is an optional list of per-clip durations (seconds,
+    in clip order). When provided, videos are rendered for their real
+    duration; when ``None`` (legacy callers), every clip falls back to the
+    job's ``image_duration``.
+    """
     try:
         job = ComposeJob.objects.get(id=job_id)
     except ComposeJob.DoesNotExist:
@@ -36,11 +44,14 @@ def compose_job_task(job_id):
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, "output.mp4")
 
+        print(f"[Compose] job={job_id} image_duration={job.image_duration} clip_durations={clip_durations}")
+
         service.compose(
             clip_paths=clip_paths,
             audio_path=audio_path,
             output_path=output_path,
             image_duration=job.image_duration,
+            clip_durations=clip_durations,
         )
 
         job.output_video.name = os.path.relpath(output_path, settings.MEDIA_ROOT)

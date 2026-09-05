@@ -3,6 +3,7 @@ import './App.css'
 import { createComposition, createCompositionClip } from './state/composition'
 import { loadAssetMetadata } from './assets/AssetManager'
 import { findActiveClip, drawFrame, seekAndDrawVideo } from './renderer/CompositionRenderer'
+import RecordModal from './recorder/RecordModal'
 
 const API_BASE = '/api'
 
@@ -23,18 +24,25 @@ function App() {
   const [zoom, setZoom] = useState(48)
   const [duration, setDuration] = useState(0)
   const [clipPreviews, setClipPreviews] = useState([])
+  const [selectedClipId, setSelectedClipId] = useState(null)
   const [activeTab, setActiveTab] = useState('videos')
   const [timelineItems, setTimelineItems] = useState([]) // sequence of { clipIndex, uid }
   const [composition, setComposition] = useState(createComposition())
   const [assetMetadata, setAssetMetadata] = useState([])
   const [previewImages, setPreviewImages] = useState({}) // { clipIndex: HTMLImageElement }
   const [previewVideos, setPreviewVideos] = useState({}) // { clipIndex: HTMLVideoElement }
+  const [isRecorderOpen, setIsRecorderOpen] = useState(false)
+
   const videoRef = useRef(null)
   const dragIndexRef = useRef(null)
   const hiddenVideoRefs = useRef({})
   const canvasRef = useRef(null)
 
-  const estimatedDuration = Math.max(timelineItems.length * imageDuration, audioFile ? 12 : 0)
+  const estimatedDuration = Math.max(
+    composition.duration || 0,
+    timelineItems.length * imageDuration,
+    audioFile ? 12 : 0
+  )
   const totalDuration = duration || estimatedDuration
   const progress = totalDuration ? (currentTime / totalDuration) * 100 : 0
   const timelineWidth = Math.max(560, totalDuration * zoom + 30)
@@ -148,14 +156,41 @@ function App() {
 
     if (file?.type.startsWith('image/')) {
       const image = previewImages[activeClip.fileIndex]
-      drawFrame(ctx, canvas, image)
+      drawFrame(ctx, canvas, image, activeClip.transform)
     } else if (file?.type.startsWith('video/')) {
       const video = previewVideos[activeClip.fileIndex]
       if (video) {
-        seekAndDrawVideo(video, ctx, canvas, timeWithinClip)
+        const speed = activeClip.speed || 1
+        const sourceTime = timeWithinClip * speed
+        seekAndDrawVideo(video, ctx, canvas, sourceTime, activeClip.transform)
       }
     }
   }, [currentTime, composition, previewImages, previewVideos, clips])
+
+  // Playback loop: advances currentTime in real time while isPlaying is true
+  useEffect(() => {
+    if (!isPlaying) return undefined
+    let rafId
+    let lastTimestamp = performance.now()
+
+    const tick = (now) => {
+      const delta = (now - lastTimestamp) / 1000
+      lastTimestamp = now
+
+      setCurrentTime((prevTime) => {
+        const nextTime = prevTime + delta
+        if (nextTime >= totalDuration) {
+          setIsPlaying(false)
+          return totalDuration
+        }
+        return nextTime
+      })
+      rafId = requestAnimationFrame(tick)
+    }
+
+    rafId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafId)
+  }, [isPlaying, totalDuration])
 
   // Reset the "known" video duration whenever the timeline sequence changes,
   // so the timeline width recalculates from the new sequence instead of
@@ -175,12 +210,31 @@ function App() {
     setLoading(true)
     setError('')
     const formData = new FormData()
+    // Per-clip durations (Phase: duration fix), built in the SAME order the
+    // files are appended below (timelineItems order). Videos carry their
+    // real composition duration (matched by uid — never a blind index);
+    // images carry the image duration setting. The backend renders each
+    // clip for exactly this many seconds.
+    const clipDurations = []
     timelineItems.forEach((item) => {
       const file = clips[item.clipIndex]
-      if (file) formData.append('clips', file)
+      if (!file) return
+      formData.append('clips', file)
+
+      const isVideo = file.type?.startsWith('video/')
+      const compositionClip = composition.tracks[0]?.clips.find(
+        (clip) => clip.id === item.uid
+      )
+      const compositionDuration = compositionClip?.duration
+      const clipDuration = isVideo && Number.isFinite(compositionDuration) && compositionDuration > 0
+        ? compositionDuration
+        : imageDuration
+      clipDurations.push(clipDuration)
     })
     if (audioFile) formData.append('audio', audioFile)
     formData.append('image_duration', String(imageDuration))
+    formData.append('clip_durations', JSON.stringify(clipDurations))
+    console.debug('[Submit] clip_durations=', clipDurations)
 
     try {
       const response = await fetch(`${API_BASE}/jobs/`, {
@@ -224,12 +278,7 @@ function App() {
   }
 
   const handleTogglePlayback = () => {
-    if (!videoRef.current) return
-    if (videoRef.current.paused) {
-      videoRef.current.play()
-    } else {
-      videoRef.current.pause()
-    }
+    setIsPlaying((prev) => !prev)
   }
 
   const removeClip = (index) => {
@@ -242,18 +291,33 @@ function App() {
   }
 
   const addToTimeline = (clipIndex) => {
-    setTimelineItems((prev) => [
-      ...prev,
-      { clipIndex, uid: `${clipIndex}-${Date.now()}-${Math.random()}` },
-    ])
+    const uid = `${clipIndex}-${Date.now()}-${Math.random()}`
+    setTimelineItems((prev) => [...prev, { clipIndex, uid }])
     setComposition((prev) => {
       const videoTrack = prev.tracks[0]
       const startTime = videoTrack.clips.reduce((sum, clip) => sum + clip.duration, 0)
       const file = clips[clipIndex]
-      const newClip = createCompositionClip(file, clipIndex, startTime, imageDuration)
+
+      // Duration policy (Phase 4):
+      //   - images keep the existing image-duration behavior
+      //   - videos use their REAL duration from the browser-loaded metadata,
+      //     falling back to imageDuration only if metadata isn't ready yet
+      const isVideo = file?.type?.startsWith('video/')
+      const metaDuration = assetMetadata[clipIndex]?.duration
+      const clipDuration = isVideo && typeof metaDuration === 'number' && Number.isFinite(metaDuration) && metaDuration > 0
+        ? metaDuration
+        : imageDuration
+
+      const newClip = { ...createCompositionClip(file, clipIndex, startTime, clipDuration), id: uid, baseDuration: clipDuration }
+
+      // Jump the live preview to the start of the newly added clip
+      // and select it, so the user immediately sees what they just added.
+      setCurrentTime(startTime)
+      setSelectedClipId(uid)
+
       return {
         ...prev,
-        duration: startTime + imageDuration,
+        duration: startTime + clipDuration,
         tracks: [
           { ...videoTrack, clips: [...videoTrack.clips, newClip] },
           prev.tracks[1],
@@ -287,6 +351,56 @@ function App() {
     })
   }
 
+  const updateSelectedClipOpacity = (opacity) => {
+    if (!selectedClipId) return
+    setComposition((prev) => ({
+      ...prev,
+      tracks: [
+        {
+          ...prev.tracks[0],
+          clips: prev.tracks[0].clips.map((clip) =>
+            clip.id === selectedClipId ? { ...clip, transform: { ...clip.transform, opacity } } : clip
+          ),
+        },
+        prev.tracks[1],
+      ],
+    }))
+  }
+
+  const updateSelectedClipSpeed = (speed) => {
+    if (!selectedClipId) return
+    setComposition((prev) => {
+      const videoTrack = prev.tracks[0]
+
+      // Recompute duration for the changed clip based on its original
+      // source length, then re-lay-out every clip's startTime in order
+      // so later clips shift correctly when an earlier one gets shorter/longer.
+      let runningTime = 0
+      const updatedClips = videoTrack.clips.map((clip) => {
+        const isTarget = clip.id === selectedClipId
+        const newSpeed = isTarget ? speed : clip.speed || 1
+        const baseDuration = clip.baseDuration || clip.duration * (clip.speed || 1)
+        const newDuration = baseDuration / newSpeed
+
+        const updated = {
+          ...clip,
+          speed: newSpeed,
+          baseDuration, // remember the original, speed-1 duration for future recalculation
+          duration: newDuration,
+          startTime: runningTime,
+        }
+        runningTime += newDuration
+        return updated
+        })
+
+        return {
+          ...prev,
+          duration: runningTime,
+          tracks: [{ ...videoTrack, clips: updatedClips }, prev.tracks[1]],
+        }
+    })
+  } 
+
   const handleDragStart = (index) => {
     dragIndexRef.current = index
   }
@@ -318,15 +432,39 @@ function App() {
     }
   }
 
+  // Adds a freshly recorded file to the media library. Everything after
+  // this (thumbnails, hidden <video>, metadata, timeline, upload) reuses
+  // the existing `clips` pipeline unchanged.
+  const commitRecording = (file) => {
+    setClips((prev) => [...prev, file])
+    setActiveTab('videos')
+    setCurrentTime(0)
+    setError('')
+  }
+
+  const closeRecorder = () => {
+    setIsRecorderOpen(false)
+  }
+
   const outputVideoUrl = job?.output_video
   const statusClass = job ? `status status-${job.status}` : 'status status-idle'
+  const selectedClip = composition.tracks[0].clips.find((c) => c.id === selectedClipId)
 
   return (
     <main className="simple-app">
       <section className="simple-card sidebar-card">
         <div className="sidebar-header">
           <span className="sidebar-title">🎬 Compose</span>
-          <span className="sidebar-meta">{clips.length} clips · {audioFile ? 1 : 0} audio</span>
+          <span className="sidebar-header-actions">
+            <button
+              type="button"
+              className="record-button"
+              onClick={() => setIsRecorderOpen(true)}
+            >
+              🎥 Record
+            </button>
+            <span className="sidebar-meta">{clips.length} clips · {audioFile ? 1 : 0} audio</span>
+          </span>
         </div>
 
         <div className="sidebar-tabs">
@@ -373,7 +511,11 @@ function App() {
                       <span className="thumb-add-badge">+</span>
                     </button>
                     <p className="thumb-name">{file.name}</p>
-                    <p className="thumb-duration">{imageDuration}s</p>
+                    <p className="thumb-duration">
+                      {file.type.startsWith('video/') && assetMetadata[index] && typeof assetMetadata[index].duration === 'number' && Number.isFinite(assetMetadata[index].duration)
+                        ? `${Math.round(assetMetadata[index].duration)}s`
+                        : `${imageDuration}s`}
+                    </p>
                     <button
                       type="button"
                       className="thumb-remove"
@@ -498,13 +640,38 @@ function App() {
 
         {(timelineItems.length > 0 || audioFile) && (
           <div className="timeline-section compact">
+            {selectedClipId && selectedClip && (
+              <div className="clip-inspector">
+                <span>Opacity</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={selectedClip.transform?.opacity ?? 1}
+                  onChange={(e) => updateSelectedClipOpacity(Number(e.target.value))}
+                />
+                <span>Speed</span>
+                <input
+                  type="range"
+                  min="0.25"
+                  max="3"
+                  step="0.25"
+                  value={selectedClip.speed ?? 1}
+                  onChange={(e) => updateSelectedClipSpeed(Number(e.target.value))}
+                />
+                <span className="speed-label">{selectedClip.speed ?? 1}x</span>
+              </div>
+            )}
+
             <div className="timeline-controls">
-              <button type="button" className="timeline-play" onClick={handleTogglePlayback} disabled={!outputVideoUrl}>{isPlaying ? 'Pause' : 'Play'}</button>
+              <button type="button" className="timeline-play" onClick={handleTogglePlayback} disabled={!timelineItems.length}>{isPlaying ? 'Pause' : 'Play'}</button>
               <button type="button" onClick={() => seekTo(0)}>Start</button>
               <input type="range" min="0" max={totalDuration || 1} step="0.1" value={currentTime} onChange={(event) => seekTo(Number(event.target.value))} aria-label="Timeline position" />
               <button type="button" onClick={() => setZoom((value) => Math.max(24, value - 8))}>−</button>
               <button type="button" onClick={() => setZoom((value) => Math.min(96, value + 8))}>+</button>
             </div>
+
             <div className="timeline-scroll">
               <div className="timeline-canvas" style={{ width: `${timelineWidth}px` }} onClick={handleTimelineClick}>
                 <div className="timeline-ruler"><span />{Array.from({ length: Math.max(2, Math.ceil(totalDuration) + 1) }, (_, index) => <span key={index} style={{ left: `${index * zoom}px` }}>{formatTime(index)}</span>)}</div>
@@ -515,16 +682,31 @@ function App() {
                       timelineItems.map((item) => {
                         const file = clips[item.clipIndex]
                         if (!file) return null
+                        const isSelected = selectedClipId === item.uid
+                        const blockClip = composition.tracks[0]?.clips.find((clip) => clip.id === item.uid)
+                        const blockDuration = blockClip?.duration || imageDuration
                         return (
                           <div
                             key={item.uid}
-                            className="timeline-block video-block"
-                            style={{ width: `${Math.max(imageDuration * zoom - 4, 86)}px` }}
-                            onClick={() => removeFromTimeline(item.uid)}
-                            title="Click to remove from timeline"
+                            className={isSelected ? 'timeline-block video-block selected' : 'timeline-block video-block'}
+                            style={{ width: `${Math.max(blockDuration * zoom - 4, 86)}px` }}
+                            onClick={() => setSelectedClipId(item.uid)}
+                            title="Click to select"
                           >
                             <b>{file.name}</b>
-                            <small>{formatTime(imageDuration)}</small>
+                            <small>{formatTime(blockDuration)}</small>
+                            <button
+                              type="button"
+                              className="timeline-block-remove"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                removeFromTimeline(item.uid)
+                                if (selectedClipId === item.uid) setSelectedClipId(null)
+                              }}
+                              aria-label="Remove from timeline"
+                            >
+                              ×
+                            </button>
                           </div>
                         )
                       })
@@ -540,6 +722,13 @@ function App() {
           </div>
         )}
       </section>
+
+      {isRecorderOpen && (
+        <RecordModal
+          onClose={closeRecorder}
+          onCommit={commitRecording}
+        />
+      )}
     </main>
   )
 }

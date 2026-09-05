@@ -26,18 +26,81 @@ export function loadImageMetadata(file) {
   })
 }
 
+// Resolves the true duration of a video. MediaRecorder-produced WebM
+// files (screen/webcam recordings) do not declare a Duration element in
+// their header, so the browser initially reports `duration === Infinity`
+// for them. The seek-to-end workaround below forces the browser to scan
+// the stream and compute the real duration. Never resolves Infinity/NaN.
+function resolveVideoDuration(video, timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      resolve(video.duration)
+      return
+    }
+
+    let settled = false
+    const cleanup = () => {
+      video.removeEventListener('durationchange', onDurationChange)
+      video.removeEventListener('error', onError)
+      clearTimeout(timer)
+    }
+    const finish = (duration) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(duration)
+    }
+    const onDurationChange = () => {
+      if (Number.isFinite(video.duration) && video.duration > 0) {
+        video.currentTime = 0 // rewind after the probe seek
+        finish(video.duration)
+      }
+    }
+    const onError = () => finish(NaN)
+    video.addEventListener('durationchange', onDurationChange)
+    video.addEventListener('error', onError)
+    const timer = setTimeout(() => finish(NaN), timeoutMs)
+
+    // Seek far past the end: the browser must scan the whole stream to
+    // satisfy the seek, which reveals the real duration via durationchange.
+    try {
+      video.currentTime = 1e101
+    } catch {
+      finish(NaN)
+    }
+  })
+}
+
 export function loadVideoMetadata(file) {
   return new Promise((resolve, reject) => {
     const url = createObjectUrlAsset(file)
     const video = document.createElement('video')
     video.preload = 'metadata'
-    video.onloadedmetadata = () => {
-      resolve({ url, width: video.videoWidth, height: video.videoHeight, duration: video.duration })
-    }
+
     video.onerror = () => {
       revokeObjectUrlAsset(url)
       reject(new Error(`Could not load video: ${file.name}`))
     }
+
+    video.onloadedmetadata = async () => {
+      try {
+        const duration = await resolveVideoDuration(video)
+        console.debug('[Duration] file=%s duration=%s', file.name, duration)
+
+        // Never hand Infinity/NaN upstream as a valid duration.
+        if (!Number.isFinite(duration) || duration <= 0) {
+          revokeObjectUrlAsset(url)
+          reject(new Error(`Could not determine duration for video: ${file.name}`))
+          return
+        }
+
+        resolve({ url, width: video.videoWidth, height: video.videoHeight, duration })
+      } catch (metadataError) {
+        revokeObjectUrlAsset(url)
+        reject(metadataError)
+      }
+    }
+
     video.src = url
   })
 }

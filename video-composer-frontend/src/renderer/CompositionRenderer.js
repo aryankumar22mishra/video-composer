@@ -9,44 +9,60 @@ export function findActiveClip(composition, time) {
   )
 }
 
-export function drawFrame(ctx, canvas, image) {
+const DEFAULT_TRANSFORM = { x: 0.5, y: 0.5, scale: 1, opacity: 1, rotation: 0 }
+
+export function drawFrame(ctx, canvas, image, transform = DEFAULT_TRANSFORM) {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
-  if (!image) return
-
-  // Fit the image inside the canvas while preserving aspect ratio (letterbox)
-  const canvasRatio = canvas.width / canvas.height
-  const imageRatio = image.width / image.height
-  let drawWidth, drawHeight
-
-  if (imageRatio > canvasRatio) {
-    drawWidth = canvas.width
-    drawHeight = canvas.width / imageRatio
-  } else {
-    drawHeight = canvas.height
-    drawWidth = canvas.height * imageRatio
-  }
-
-  const x = (canvas.width - drawWidth) / 2
-  const y = (canvas.height - drawHeight) / 2
-
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, canvas.width, canvas.height)
-  ctx.drawImage(image, x, y, drawWidth, drawHeight)
+
+  if (!image) return
+
+  const t = { ...DEFAULT_TRANSFORM, ...transform }
+
+  // Base "fit to canvas" size (same letterbox logic as before), then apply scale
+  const canvasRatio = canvas.width / canvas.height
+  const mediaWidth = image.videoWidth || image.width
+  const mediaHeight = image.videoHeight || image.height
+  const imageRatio = mediaWidth / mediaHeight
+
+  let baseWidth, baseHeight
+  if (imageRatio > canvasRatio) {
+    baseWidth = canvas.width
+    baseHeight = canvas.width / imageRatio
+  } else {
+    baseHeight = canvas.height
+    baseWidth = canvas.height * imageRatio
+  }
+
+  const drawWidth = baseWidth * t.scale
+  const drawHeight = baseHeight * t.scale
+
+  const centerX = canvas.width * t.x
+  const centerY = canvas.height * t.y
+
+  ctx.save()
+  ctx.globalAlpha = t.opacity
+  ctx.translate(centerX, centerY)
+  ctx.rotate((t.rotation * Math.PI) / 180)
+  ctx.drawImage(image, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight)
+  ctx.restore()
 }
 
-export function seekAndDrawVideo(video, ctx, canvas, timeWithinClip, onReady) {
-  const trySeek = () => {
-    if (Math.abs(video.currentTime - timeWithinClip) > 0.05) {
-      video.currentTime = timeWithinClip
-    } else {
-      drawFrame(ctx, canvas, video)
-      onReady && onReady()
-    }
+export function seekAndDrawVideo(video, ctx, canvas, timeWithinClip, transform) {
+  const needsSeek = Math.abs(video.currentTime - timeWithinClip) > 0.05
+
+  const draw = () => drawFrame(ctx, canvas, video, transform)
+
+  if (!needsSeek && video.readyState >= 2) {
+    draw()
+    return
   }
 
-  if (video.readyState >= 2) {
-    trySeek()
-  } else {
-    video.addEventListener('loadeddata', trySeek, { once: true })
+  const onSeeked = () => {
+    video.removeEventListener('seeked', onSeeked)
+    draw()
   }
+  video.addEventListener('seeked', onSeeked)
+  video.currentTime = timeWithinClip
 }
