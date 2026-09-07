@@ -31,7 +31,12 @@ export function loadImageMetadata(file) {
 // their header, so the browser initially reports `duration === Infinity`
 // for them. The seek-to-end workaround below forces the browser to scan
 // the stream and compute the real duration. Never resolves Infinity/NaN.
-function resolveVideoDuration(video, timeoutMs = 3000) {
+//
+// Exported so the composer's hidden preview <video> elements can run the
+// same fix — without it those elements are unseekable and the canvas
+// preview cannot play recorded clips (the file itself is fine; FFmpeg
+// reads it correctly on the backend).
+export function resolveVideoDuration(video, timeoutMs = 3000) {
   return new Promise((resolve) => {
     if (Number.isFinite(video.duration) && video.duration > 0) {
       resolve(video.duration)

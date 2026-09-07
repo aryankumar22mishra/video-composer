@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { createComposition, createCompositionClip } from './state/composition'
-import { loadAssetMetadata } from './assets/AssetManager'
+import { loadAssetMetadata, resolveVideoDuration } from './assets/AssetManager'
 import { findActiveClip, drawFrame, seekAndDrawVideo } from './renderer/CompositionRenderer'
 import RecordModal from './recorder/RecordModal'
+import useScreenRecorder from './recorder/useScreenRecorder'
+import RecordingControls from './recorder/RecordingControls'
+import RecordingReview from './recorder/RecordingReview'
 
 const API_BASE = '/api'
 
@@ -31,11 +34,95 @@ function App() {
   const [assetMetadata, setAssetMetadata] = useState([])
   const [previewImages, setPreviewImages] = useState({}) // { clipIndex: HTMLImageElement }
   const [previewVideos, setPreviewVideos] = useState({}) // { clipIndex: HTMLVideoElement }
-  const [isRecorderOpen, setIsRecorderOpen] = useState(false)
+  const [isRecorderSetupOpen, setIsRecorderSetupOpen] = useState(false)
+  const [recordingElapsed, setRecordingElapsed] = useState(0)
+  const [countdown, setCountdown] = useState(null) // OpenVid countdown: null | 3 | 2 | 1
+  const [reviewDuration, setReviewDuration] = useState(0) // duration shown in the review panel
+  const recordingStartedAtRef = useRef(null)
+
+  // Recorder lifecycle lives at the App level so it survives the Setup UI
+  // being closed. Closing the modal during an active recording must NOT
+  // stop or discard that recording.
+  const recorder = useScreenRecorder({ onCommit: commitRecording })
+
+  // OpenVid flow: once the screen (and any mic/camera) is ready, close
+  // the setup UI and show the 3-2-1 countdown. The App-level recorder
+  // keeps the streams alive — closing the setup modal NEVER stops them.
+  useEffect(() => {
+    if (recorder.recordingState === 'ready') {
+      setIsRecorderSetupOpen(false)
+      setCountdown(3)
+    }
+  }, [recorder.recordingState])
+
+  // Countdown ticker: 3 → 2 → 1, then auto-start the recording.
+  // UI-only — it never touches the streams; startRecording() is guarded
+  // by the recorder state so it can only fire after 'ready'.
+  useEffect(() => {
+    if (!countdown) return undefined
+    const timer = setTimeout(() => {
+      if (countdown > 1) {
+        setCountdown(countdown - 1)
+      } else {
+        setCountdown(null)
+        if (recorder.recordingState === 'ready') {
+          recorder.startRecording()
+        }
+      }
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [countdown, recorder.recordingState, recorder.startRecording])
+
+  // Safety: if the recorder leaves 'ready' without starting (e.g. the
+  // user cancels during the countdown), drop the countdown UI at once.
+  useEffect(() => {
+    if (countdown && recorder.recordingState !== 'ready') {
+      setCountdown(null)
+    }
+  }, [countdown, recorder.recordingState])
+
+  // If a recording/auto-start fails AFTER the setup UI was auto-closed,
+  // bring the setup back so the friendly error is visible and the user
+  // can retry. (Cancelling is silent — no error text — so it never reopens.)
+  useEffect(() => {
+    if (
+      !countdown &&
+      recorder.recordingState === 'idle' &&
+      recorder.error
+    ) {
+      setIsRecorderSetupOpen(true)
+    }
+  }, [countdown, recorder.recordingState, recorder.error])
+
+  // Visible timer for the recording bar. Timestamp-based (not tick-based)
+  // so the elapsed time stays accurate even if background tabs throttle
+  // intervals or the user returns mid-recording. The final length is
+  // captured for the post-recording review panel.
+  useEffect(() => {
+    if (recorder.recordingState === 'recording') {
+      recordingStartedAtRef.current = Date.now()
+      const tick = () => {
+        setRecordingElapsed(
+          Math.max(0, Math.floor((Date.now() - recordingStartedAtRef.current) / 1000)),
+        )
+      }
+      const interval = setInterval(tick, 250)
+      return () => clearInterval(interval)
+    }
+    if (recordingStartedAtRef.current) {
+      setReviewDuration(
+        Math.max(0, Math.floor((Date.now() - recordingStartedAtRef.current) / 1000)),
+      )
+    }
+    recordingStartedAtRef.current = null
+    setRecordingElapsed(0)
+    return undefined
+  }, [recorder.recordingState])
 
   const videoRef = useRef(null)
   const dragIndexRef = useRef(null)
-  const hiddenVideoRefs = useRef({})
+  const hiddenVideoRefs = useRef({}) // index -> HTMLVideoElement (canvas preview)
+  const hiddenVideoUrlRefs = useRef({}) // index -> object URL (lives as long as the video)
   const canvasRef = useRef(null)
 
   const estimatedDuration = Math.max(
@@ -113,16 +200,21 @@ function App() {
     if (pending === 0) setPreviewImages({ ...newImages })
   }, [clips, clipPreviews])
 
-  // Build hidden <video> elements for video clips so the canvas can draw frames from them
+  // Build hidden <video> elements for video clips so the canvas can draw frames
+  // from them. MediaRecorder-produced WebM files report duration === Infinity,
+  // which makes the element unseekable — seeks are ignored and the canvas
+  // preview freezes (the file itself plays fine after FFmpeg renders it).
+  // resolveVideoDuration() applies the seek-to-end probe so every preview
+  // element becomes seekable and playback works for recordings too.
   useEffect(() => {
-    const createdUrls = []
+    const urls = hiddenVideoUrlRefs.current
 
     clips.forEach((file, index) => {
       if (!file.type.startsWith('video/')) return
       if (hiddenVideoRefs.current[index]) return // already created
 
       const url = URL.createObjectURL(file)
-      createdUrls.push(url)
+      urls[index] = url
 
       const video = document.createElement('video')
       video.src = url
@@ -131,11 +223,34 @@ function App() {
       video.playsInline = true
       hiddenVideoRefs.current[index] = video
       setPreviewVideos((prev) => ({ ...prev, [index]: video }))
+
+      // Fix the Infinity duration so the element can seek (and therefore
+      // play) in the canvas preview. IMPORTANT: the probe seek must happen
+      // AFTER loadedmetadata — a currentTime set before metadata loads is
+      // treated by Chrome as a start-position hint, not a real seek, and
+      // the duration fix would never engage. Fire-and-forget; failures are
+      // non-fatal.
+      const runDurationProbe = () => {
+        resolveVideoDuration(video).catch(() => {})
+      }
+      if (video.readyState >= 1) {
+        runDurationProbe()
+      } else {
+        video.addEventListener('loadedmetadata', runDurationProbe, { once: true })
+      }
     })
 
-    return () => {
-      createdUrls.forEach((url) => URL.revokeObjectURL(url))
-    }
+    // Release the video element + object URL only for clips that were
+    // removed. Revoking URLs that are still in use would break playback.
+    Object.keys(hiddenVideoRefs.current).forEach((key) => {
+      const index = Number(key)
+      if (clips[index]) return
+      hiddenVideoRefs.current[index]?.pause?.()
+      delete hiddenVideoRefs.current[index]
+      const staleUrl = urls[index]
+      if (staleUrl) URL.revokeObjectURL(staleUrl)
+      delete urls[index]
+    })
   }, [clips])
 
   // Draw the active clip (image or video frame) onto the canvas whenever
@@ -435,15 +550,26 @@ function App() {
   // Adds a freshly recorded file to the media library. Everything after
   // this (thumbnails, hidden <video>, metadata, timeline, upload) reuses
   // the existing `clips` pipeline unchanged.
-  const commitRecording = (file) => {
+  // Note: this MUST stay a function declaration, not `const` arrow — it is
+  // referenced by the useScreenRecorder() hook at the top of App() (line 41),
+  // and a `const` would be in the Temporal Dead Zone there (blank page).
+  function commitRecording(file) {
     setClips((prev) => [...prev, file])
     setActiveTab('videos')
     setCurrentTime(0)
     setError('')
   }
 
-  const closeRecorder = () => {
-    setIsRecorderOpen(false)
+  const closeRecorderSetup = () => {
+    setIsRecorderSetupOpen(false)
+  }
+
+  // Cancel the OpenVid countdown before recording starts: stop all
+  // temporary streams and return to idle. No File can be committed
+  // because recording never started.
+  const handleCancelCountdown = () => {
+    setCountdown(null)
+    recorder.reset()
   }
 
   const outputVideoUrl = job?.output_video
@@ -458,10 +584,14 @@ function App() {
           <span className="sidebar-header-actions">
             <button
               type="button"
-              className="record-button"
-              onClick={() => setIsRecorderOpen(true)}
+              className={
+                recorder.recordingState === 'recording'
+                  ? 'record-button is-active'
+                  : 'record-button'
+              }
+              onClick={() => setIsRecorderSetupOpen(true)}
             >
-              🎥 Record
+              {recorder.recordingState === 'recording' ? '⏺ Recording' : '🎥 Record'}
             </button>
             <span className="sidebar-meta">{clips.length} clips · {audioFile ? 1 : 0} audio</span>
           </span>
@@ -723,10 +853,33 @@ function App() {
         )}
       </section>
 
-      {isRecorderOpen && (
+      <RecordingControls
+        recordingState={recorder.recordingState}
+        elapsed={recordingElapsed}
+        countdown={countdown}
+        onStop={recorder.stopRecording}
+        onStopSharing={recorder.stopScreenCapture}
+        onCancelCountdown={handleCancelCountdown}
+        notice={recorder.notice}
+        error={recorder.error}
+        micEnabled={recorder.micEnabled}
+        cameraEnabled={recorder.cameraEnabled}
+        systemAudioEnabled={recorder.systemAudioEnabled}
+      />
+
+      {recorder.recordingState === 'completed' && recorder.recordingFile && (
+        <RecordingReview
+          file={recorder.recordingFile}
+          elapsed={reviewDuration}
+          onUse={recorder.confirmRecording}
+          onDiscard={recorder.discardRecording}
+        />
+      )}
+
+      {isRecorderSetupOpen && (
         <RecordModal
-          onClose={closeRecorder}
-          onCommit={commitRecording}
+          recorder={recorder}
+          onClose={closeRecorderSetup}
         />
       )}
     </main>

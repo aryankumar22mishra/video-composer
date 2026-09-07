@@ -54,10 +54,14 @@ export function seekAndDrawVideo(video, ctx, canvas, timeWithinClip, transform) 
 
   const draw = () => drawFrame(ctx, canvas, video, transform)
 
-  if (!needsSeek && video.readyState >= 2) {
+  // Paint whatever frame is already decoded so the preview is never blank
+  // while a seek is pending (e.g. during the WebM duration probe right
+  // after a recording is added).
+  if (video.readyState >= 2) {
     draw()
-    return
   }
+
+  if (!needsSeek) return
 
   const onSeeked = () => {
     video.removeEventListener('seeked', onSeeked)

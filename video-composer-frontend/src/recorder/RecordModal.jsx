@@ -6,16 +6,12 @@
 //   FOOTER: Cancel + the state-driven primary action (Share screen →
 //          Start recording → Stop recording → Processing…).
 //
-// This component is presentation-only: every recording internal lives in
-// useScreenRecorder (streams, MediaRecorder, canvas compositing, cleanup).
-// The UI preview mirrors settings via CSS only — the recording canvas in
-// the hook remains the authoritative source for the saved video.
+// The recorder lifecycle (hook) lives in App.jsx so it survives this modal
+// being closed. This component receives the recorder via props. Closing the
+// modal while a recording is active must NOT stop or discard that recording.
 
 import { useCallback, useEffect, useRef } from 'react'
-import useScreenRecorder from './useScreenRecorder'
 
-// The recorder composites webcam bubbles at these exact sizes; the slider
-// snaps between them and always displays the active percentage.
 const SIZE_ORDER = ['small', 'medium', 'large']
 const SIZE_PERCENT = { small: 18, medium: 25, large: 32 }
 
@@ -64,22 +60,7 @@ function ShapeIcon({ shape }) {
   )
 }
 
-function ToggleSwitch({ checked, onChange, label }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      className={checked ? 'record-switch is-on' : 'record-switch'}
-      onClick={() => onChange(!checked)}
-    >
-      <span className="record-switch-knob" />
-    </button>
-  )
-}
-
-function RecordModal({ onClose, onCommit }) {
+function RecordModal({ recorder, onClose }) {
   const {
     devices,
     cameraEnabled, setCameraEnabled,
@@ -94,9 +75,9 @@ function RecordModal({ onClose, onCommit }) {
     cameraStream,
     systemAudioEnabled, setSystemAudioEnabled,
     recordingState, screenStream, error, notice,
-    startScreenCapture, startRecording, stopRecording,
+    startScreenCapture, startRecording,
     reset,
-  } = useScreenRecorder({ onCommit })
+  } = recorder
 
   const previewVideoRef = useRef(null)
   const cameraPreviewRef = useRef(null)
@@ -122,9 +103,20 @@ function RecordModal({ onClose, onCommit }) {
   }, [recordingState, onClose])
 
   const handleCancel = useCallback(() => {
-    reset()
-    onClose()
-  }, [reset, onClose])
+    // If a recording is active (or finalizing), closing the setup UI must
+    // NOT stop or discard it. Just hide the modal; the recorder keeps
+    // running and the user can stop it via the persistent control.
+    if (
+      recordingState === 'recording' ||
+      recordingState === 'stopping' ||
+      recordingState === 'processing'
+    ) {
+      onClose()
+    } else {
+      reset()
+      onClose()
+    }
+  }, [recordingState, reset, onClose])
 
   const handleBackdropClick = (event) => {
     if (event.target === event.currentTarget) handleCancel()
@@ -151,9 +143,8 @@ function RecordModal({ onClose, onCommit }) {
     startRecording()
   }
 
-  const handleStopRecording = () => {
-    stopRecording()
-  }
+  // NOTE: no local Stop handler — while recording, the persistent
+  // App-level RecordingControls bar owns the Stop action.
 
   // --- Derived UI state -------------------------------------------------
   // Pure CSS preview: the bubble mirrors shape/size/mirror/position via
@@ -175,7 +166,9 @@ function RecordModal({ onClose, onCommit }) {
   } else if (recordingState === 'ready') {
     primaryAction = { label: '● Start recording', action: handleStartRecording, disabled: !screenStream, tone: '' }
   } else if (recordingState === 'recording') {
-    primaryAction = { label: '■ Stop recording', action: handleStopRecording, disabled: false, tone: 'danger' }
+    // The persistent App-level RecordingControls bar owns Stop while
+    // recording — this setup modal must not show a competing Stop button.
+    primaryAction = { label: '⏺ Recording in progress…', action: null, disabled: true, tone: '' }
   } else if (recordingState === 'stopping' || recordingState === 'processing') {
     primaryAction = { label: 'Processing…', action: null, disabled: true, tone: '' }
   } else if (recordingState === 'completed') {
@@ -218,7 +211,7 @@ function RecordModal({ onClose, onCommit }) {
         </header>
 
         <div className="record-modal-body">
-          <section className="record-preview-panel" aria-label="Live preview">
+          <div className="record-preview-column">
             <div className="record-preview-stage">
               {screenStream ? (
                 <video
@@ -279,10 +272,10 @@ function RecordModal({ onClose, onCommit }) {
                       type="button"
                       role="radio"
                       aria-checked={isSelected}
-                      className={isSelected ? 'record-position-card selected' : 'record-position-card'}
+                      className={isSelected ? 'record-position-card is-selected' : 'record-position-card'}
                       onClick={() => setCameraPosition(option.value)}
                     >
-                      <span className="record-position-mini" aria-hidden>
+                      <span className="record-position-cell" aria-hidden>
                         <span
                           className="record-position-dot"
                           style={BUBBLE_POSITION_STYLE[option.value]}
@@ -298,12 +291,17 @@ function RecordModal({ onClose, onCommit }) {
             </div>
 
             <div className="record-messages">
+              <p className="record-hint">
+                🎥 Start from the Video Composer tab (select it in Chrome's picker).
+                During recording, Chrome's sharing controls let you switch the
+                captured tab — the recording keeps running across switches.
+              </p>
               {notice && <p className="message recorder-notice">{notice}</p>}
               {error && <p className="message error">{error}</p>}
             </div>
-          </section>
+          </div>
 
-          <section className="record-settings-panel" aria-label="Recording settings">
+          <div className="record-settings-column">
             <div className="record-settings-card">
               <div className="record-settings-head">
                 <span className="record-settings-icon" aria-hidden>📹</span>
@@ -311,17 +309,22 @@ function RecordModal({ onClose, onCommit }) {
                   <h3 className="record-settings-title">Camera</h3>
                   <p className="record-settings-desc">Add a bubble with your webcam.</p>
                 </div>
-                <ToggleSwitch
-                  checked={cameraEnabled}
-                  onChange={setCameraEnabled}
-                  label="Camera"
-                />
+                <label className="record-toggle">
+                  <input
+                    type="checkbox"
+                    checked={cameraEnabled}
+                    onChange={(event) => setCameraEnabled(event.target.checked)}
+                    disabled={!devices.cameras.length}
+                  />
+                  <span className="record-toggle-track">
+                    <span className="record-toggle-thumb" />
+                  </span>
+                </label>
               </div>
 
               <div className={cameraEnabled ? 'record-settings-controls' : 'record-settings-controls is-disabled'}>
-                <label className="record-field-label" htmlFor="camera-device">Camera device</label>
+                <span className="record-field-label">Camera device</span>
                 <select
-                  id="camera-device"
                   className="record-select"
                   value={cameraDeviceId}
                   onChange={(event) => {
@@ -350,7 +353,7 @@ function RecordModal({ onClose, onCommit }) {
                         type="button"
                         role="radio"
                         aria-checked={isSelected}
-                        className={isSelected ? 'record-shape-card selected' : 'record-shape-card'}
+                        className={isSelected ? 'record-shape-option is-selected' : 'record-shape-option'}
                         onClick={() => setCameraShape(option.value)}
                         disabled={!cameraEnabled}
                       >
@@ -376,14 +379,19 @@ function RecordModal({ onClose, onCommit }) {
                   <output className="record-size-value">{sizePercent}%</output>
                 </div>
 
-                <label className="record-toggle-row">
+                <div className="record-toggle-row">
                   <span className="record-toggle-label">Mirror horizontally</span>
-                  <ToggleSwitch
-                    checked={cameraMirror}
-                    onChange={setCameraMirror}
-                    label="Mirror horizontally"
-                  />
-                </label>
+                  <label className="record-toggle">
+                    <input
+                      type="checkbox"
+                      checked={cameraMirror}
+                      onChange={(event) => setCameraMirror(event.target.checked)}
+                    />
+                    <span className="record-toggle-track">
+                      <span className="record-toggle-thumb" />
+                    </span>
+                  </label>
+                </div>
               </div>
             </div>
 
@@ -394,17 +402,22 @@ function RecordModal({ onClose, onCommit }) {
                   <h3 className="record-settings-title">Microphone</h3>
                   <p className="record-settings-desc">Record your voice on the same track.</p>
                 </div>
-                <ToggleSwitch
-                  checked={micEnabled}
-                  onChange={setMicEnabled}
-                  label="Microphone"
-                />
+                <label className="record-toggle">
+                  <input
+                    type="checkbox"
+                    checked={micEnabled}
+                    onChange={(event) => setMicEnabled(event.target.checked)}
+                    disabled={!devices.microphones.length}
+                  />
+                  <span className="record-toggle-track">
+                    <span className="record-toggle-thumb" />
+                  </span>
+                </label>
               </div>
 
               <div className={micEnabled ? 'record-settings-controls' : 'record-settings-controls is-disabled'}>
-                <label className="record-field-label" htmlFor="mic-device">Microphone device</label>
+                <span className="record-field-label">Microphone device</span>
                 <select
-                  id="mic-device"
                   className="record-select"
                   value={micDeviceId}
                   onChange={(event) => setMicDeviceId(event.target.value)}
@@ -435,14 +448,19 @@ function RecordModal({ onClose, onCommit }) {
                   <h3 className="record-settings-title">System Audio</h3>
                   <p className="record-settings-desc">Capture audio from the shared tab or window.</p>
                 </div>
-                <ToggleSwitch
-                  checked={systemAudioEnabled}
-                  onChange={setSystemAudioEnabled}
-                  label="Capture system audio"
-                />
+                <label className="record-toggle">
+                  <input
+                    type="checkbox"
+                    checked={systemAudioEnabled}
+                    onChange={(event) => setSystemAudioEnabled(event.target.checked)}
+                  />
+                  <span className="record-toggle-track">
+                    <span className="record-toggle-thumb" />
+                  </span>
+                </label>
               </div>
             </div>
-          </section>
+          </div>
         </div>
 
         <footer className="record-modal-footer">
@@ -461,7 +479,7 @@ function RecordModal({ onClose, onCommit }) {
 
           <button
             type="button"
-            className={primaryAction.tone === 'danger' ? 'record-button-primary danger' : 'record-button-primary'}
+            className={primaryAction.tone === 'danger' ? 'record-button-primary is-danger' : 'record-button-primary'}
             onClick={primaryAction.action ?? undefined}
             disabled={primaryAction.disabled}
           >

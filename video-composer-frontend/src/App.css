@@ -805,6 +805,14 @@ h2 {
 }
 /* --- Recording Setup modal (OpenVid-style redesign) --- */
 
+/* Scoped form-control reset: stops global button/input/select rules from
+   leaking into the recorder without affecting the main composer. */
+.record-modal button,
+.record-modal input,
+.record-modal select {
+  font: inherit;
+}
+
 .recorder-overlay {
   position: fixed;
   inset: 0;
@@ -821,7 +829,7 @@ h2 {
   display: flex;
   flex-direction: column;
   width: min(1100px, calc(100vw - 40px));
-  height: min(760px, calc(100vh - 40px));
+  max-height: calc(100vh - 40px);
   background: rgba(15, 23, 42, 0.98);
   border: 1px solid #27324a;
   border-radius: 24px;
@@ -829,14 +837,19 @@ h2 {
   overflow: hidden;
 }
 
-/* Header */
+/* Header — never scrolls */
 .record-modal-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   padding: 22px 26px;
   border-bottom: 1px solid #27324a;
+}
+
+.record-modal-heading {
+  min-width: 0;
 }
 
 .record-modal-title {
@@ -873,29 +886,31 @@ h2 {
   color: #f8fafc;
 }
 
-/* Body: two columns */
+/* Body — fills remaining height, holds two scrollable columns */
 .record-modal-body {
-  flex: 1;
-  display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  flex: 1 1 auto;
   min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
+  overflow: hidden;
 }
 
-/* Left: live preview */
-.record-preview-panel {
+/* Left column — preview + position selector */
+.record-preview-column {
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
   padding: 22px;
   border-right: 1px solid #27324a;
   overflow-y: auto;
-  min-height: 0;
 }
 
 .record-preview-stage {
   position: relative;
-  flex: 1;
-  min-height: 280px;
+  flex: 1 1 auto;
+  min-height: 200px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -903,6 +918,7 @@ h2 {
   border: 1px solid #27324a;
   background: #050a14;
   overflow: hidden;
+  aspect-ratio: 16 / 9;
 }
 
 .record-preview-screen {
@@ -975,15 +991,83 @@ h2 {
   font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 
-/* Right: settings panel */
-.record-settings-panel {
+.record-position-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.record-position-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-height: 90px;
+  justify-content: center;
+  padding: 12px 8px;
+  border: 1px solid #35415c;
+  border-radius: 10px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.record-position-card.is-selected {
+  border-color: #c4b5fd;
+  background: rgba(196, 181, 253, 0.12);
+  color: #f8fafc;
+}
+
+.record-position-cell {
+  position: relative;
+  width: 56px;
+  height: 36px;
+  border-radius: 6px;
+  border: 1px solid #35415c;
+  background: #0b1324;
+}
+
+.record-position-dot {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #c4b5fd;
+}
+
+.record-position-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.record-messages {
+  display: grid;
+  gap: 8px;
+}
+
+.record-hint {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid #35415c;
+  border-radius: 10px;
+  background: rgba(11, 19, 36, 0.6);
+  color: #94a3b8;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+/* Right column — settings cards */
+.record-settings-column {
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
   padding: 22px;
   overflow-y: auto;
-  min-height: 0;
 }
 
 .record-settings-card {
@@ -1013,6 +1097,7 @@ h2 {
 
 .record-settings-text {
   flex: 1;
+  min-width: 0;
 }
 
 .record-settings-title {
@@ -1040,24 +1125,46 @@ h2 {
   pointer-events: none;
 }
 
-/* Switch */
-.record-switch {
+/* Custom toggle switch — hides the native checkbox, shows track + thumb */
+.record-toggle {
   flex: none;
+  position: relative;
+  display: inline-block;
   width: 42px;
   height: 24px;
+  cursor: pointer;
+}
+
+.record-toggle input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.record-toggle-track {
+  position: absolute;
+  inset: 0;
   border-radius: 999px;
   border: 1px solid #35415c;
   background: #1a2741;
-  position: relative;
-  cursor: pointer;
   transition: background 0.18s ease;
 }
 
-.record-switch.is-on {
+.record-toggle input:checked + .record-toggle-track {
   background: #c4b5fd;
 }
 
-.record-switch-knob {
+.record-toggle input:focus-visible + .record-toggle-track {
+  outline: 2px solid #c4b5fd;
+  outline-offset: 2px;
+}
+
+.record-toggle-thumb {
   position: absolute;
   top: 2px;
   left: 2px;
@@ -1066,37 +1173,41 @@ h2 {
   border-radius: 50%;
   background: #f8fafc;
   transition: transform 0.18s ease;
+  pointer-events: none;
 }
 
-.record-switch.is-on .record-switch-knob {
+.record-toggle input:checked + .record-toggle-track .record-toggle-thumb {
   transform: translateX(18px);
 }
 
-/* Selects / inputs */
+/* Selects */
 .record-select,
 .record-settings-controls select {
   width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   padding: 9px 11px;
   border: 1px solid #35415c;
   border-radius: 10px;
   color: #f8fafc;
   background: #0b1324;
   font-size: 0.82rem;
+  appearance: auto;
 }
 
-/* Shape cards */
+/* Shape option cards */
 .record-shape-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
 
-.record-shape-card {
+.record-shape-option {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 5px;
-  padding: 9px 4px;
+  padding: 10px 4px;
   border: 1px solid #35415c;
   border-radius: 10px;
   background: transparent;
@@ -1106,25 +1217,27 @@ h2 {
   cursor: pointer;
 }
 
-.record-shape-card.selected {
+.record-shape-option.is-selected {
   border-color: #c4b5fd;
   background: rgba(196, 181, 253, 0.12);
   color: #f8fafc;
 }
 
-.record-shape-card svg {
+.record-shape-option svg {
   color: currentColor;
 }
 
 /* Size slider */
 .record-size-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 12px;
 }
 
 .record-size-row input[type='range'] {
-  flex: 1;
+  width: 100%;
+  margin: 0;
   accent-color: #c4b5fd;
 }
 
@@ -1136,7 +1249,7 @@ h2 {
   font-weight: 800;
 }
 
-/* Toggle row */
+/* Toggle row (label + switch) */
 .record-toggle-row {
   display: flex;
   align-items: center;
@@ -1160,11 +1273,13 @@ h2 {
   font-size: 0.78rem;
 }
 
-/* Footer */
+/* Footer — always visible, never scrolls, no absolute positioning */
 .record-modal-footer {
+  flex: 0 0 auto;
   display: flex;
   justify-content: flex-end;
-  gap: 10px;
+  align-items: center;
+  gap: 12px;
   padding: 16px 26px;
   border-top: 1px solid #27324a;
 }
@@ -1209,85 +1324,540 @@ h2 {
   cursor: not-allowed;
 }
 
-.record-button-primary.danger {
+.record-button-primary.is-danger {
   background: #f87171;
   color: #171329;
 }
 
-.record-button-primary.danger:hover {
+.record-button-primary.is-danger:hover {
   background: #fca5a5;
 }
 
 /* Mobile: stack to one column */
 @media (max-width: 900px) {
   .record-modal {
-    height: min(92vh, 760px);
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
   }
 
   .record-modal-body {
     grid-template-columns: 1fr;
+    overflow-y: auto;
   }
 
-  .record-preview-panel {
+  .record-preview-column {
     border-right: 0;
     border-bottom: 1px solid #27324a;
+    overflow-y: visible;
   }
 
   .record-preview-stage {
-    min-height: 220px;
+    min-height: 180px;
+  }
+
+  .record-settings-column {
+    overflow-y: visible;
+  }
+
+  .record-modal-footer {
+    padding: 14px 18px;
   }
 }
-  text-transform: uppercase;
+
+@media (max-width: 600px) {
+  .record-modal {
+    width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+    border-radius: 18px;
+  }
+
+  .record-modal-header {
+    padding: 16px 18px;
+  }
+
+  .record-preview-column,
+  .record-settings-column {
+    padding: 16px;
+  }
 }
 
-.record-position-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-}
-
-.record-position-card {
+/* --- Persistent recording UI (App-level RecordingControls) --- */
+.recording-countdown {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 55;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 10px 6px;
-  border: 1px solid #35415c;
-  border-radius: 10px;
-  background: transparent;
+  min-width: 200px;
+  padding: 20px 30px;
+  border: 1px solid #27324a;
+  border-radius: 20px;
+  background: rgba(15, 23, 42, 0.96);
+  box-shadow: 0 22px 50px rgba(2, 6, 23, 0.55);
+}
+
+.recording-countdown-number {
+  font-size: 3.4rem;
+  font-weight: 900;
+  line-height: 1;
+  color: #c4b5fd;
+  font-variant-numeric: tabular-nums;
+}
+
+.recording-countdown-label {
+  font-size: 0.92rem;
   color: #94a3b8;
+}
+
+.recording-countdown .record-button-secondary {
+  margin-top: 6px;
+  min-width: 120px;
+}
+
+.recording-active-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 20px;
+  border: 1px solid #7f1d1d;
+  border-radius: 999px;
+  background: rgba(36, 11, 20, 0.92);
+  box-shadow: 0 12px 32px rgba(2, 6, 23, 0.55);
+}
+
+.recording-active-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f87171;
+  box-shadow: 0 0 0 4px rgba(248, 113, 113, 0.28);
+  animation: recording-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes recording-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.recording-active-text {
+  color: #fecaca;
+  font-size: 0.82rem;
+  font-weight: 700;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.recording-active-notice {
+  max-width: 260px;
+  padding: 4px 10px;
+  border: 1px solid #35415c;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.9);
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recording-active-stop {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: #e11d48;
+  color: #ffffff;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
   cursor: pointer;
 }
 
-.record-position-card.selected {
-  border-color: #c4b5fd;
-  background: rgba(196, 181, 253, 0.12);
-  color: #f8fafc;
+.recording-active-stop:hover {
+  background: #be123c;
 }
 
-.record-position-mini {
-  position: relative;
-  width: 46px;
-  height: 30px;
-  border-radius: 5px;
-  border: 1px solid #35415c;
-  background: #0b1324;
+@media (max-width: 600px) {
+  .recording-active-bar {
+    left: 50%;
+    bottom: 12px;
+    padding: 8px 14px;
+    max-width: calc(100vw - 24px);
+  }
 }
 
-.record-position-dot {
-  position: absolute;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #c4b5fd;
+/* --- Enhanced Recording Controls (OpenVid-style) --- */
+
+/* Countdown overlay */
+.recording-countdown-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 23, 0.6);
+  backdrop-filter: blur(4px);
 }
 
-.record-position-label {
-  font-size: 0.72rem;
-  font-weight: 700;
+.recording-countdown {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-width: 280px;
+  padding: 40px 50px;
+  border: 1px solid #27324a;
+  border-radius: 24px;
+  background: rgba(15, 23, 42, 0.98);
+  box-shadow: 0 22px 50px rgba(2, 6, 23, 0.55);
 }
 
-.record-messages {
-  display: grid;
+.recording-countdown.is-animating {
+  animation: countdown-pop 0.3s ease-out;
+}
+
+@keyframes countdown-pop {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.recording-countdown-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.recording-countdown-number {
+  font-size: 5rem;
+  font-weight: 900;
+  line-height: 1;
+  color: #c4b5fd;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 40px rgba(196, 181, 253, 0.4);
+}
+
+.recording-countdown-label {
+  font-size: 1.1rem;
+  color: #94a3b8;
+  font-weight: 600;
+}
+
+.recording-countdown-hints {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
+  margin-top: 8px;
+}
+
+/* Status indicators */
+.recording-status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.recording-status-mic {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.recording-status-audio {
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.recording-status-camera {
+  background: rgba(234, 179, 8, 0.15);
+  color: #facc15;
+  border: 1px solid rgba(234, 179, 8, 0.3);
+}
+
+/* Enhanced recording dot with pulse */
+.recording-dot {
+  position: relative;
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #f87171;
+  flex-shrink: 0;
+}
+
+.recording-dot-pulse {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: rgba(248, 113, 113, 0.4);
+  animation: recording-dot-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes recording-dot-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.8);
+    opacity: 0;
+  }
+}
+
+/* Enhanced active bar */
+.recording-active-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 24px;
+  border: 1px solid #7f1d1d;
+  border-radius: 999px;
+  background: rgba(36, 11, 20, 0.95);
+  box-shadow: 0 12px 32px rgba(2, 6, 23, 0.55);
+  backdrop-filter: blur(8px);
+  transition: all 0.2s ease;
+}
+
+.recording-active-bar.is-recording {
+  border-color: #dc2626;
+  background: rgba(69, 10, 10, 0.95);
+  box-shadow: 0 12px 32px rgba(220, 38, 38, 0.3);
+}
+
+.recording-active-text {
+  color: #fecaca;
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.recording-active-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.recording-active-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.recording-active-stop {
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #e11d48, #be123c);
+  color: #ffffff;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.recording-active-stop:hover {
+  background: linear-gradient(135deg, #f43f5e, #e11d48);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(225, 29, 72, 0.4);
+}
+
+.recording-active-stop:active {
+  transform: translateY(0);
+}
+
+.recording-active-notice {
+  max-width: 260px;
+  padding: 6px 12px;
+  border: 1px solid #35415c;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.9);
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 600px) {
+  .recording-active-bar {
+    left: 50%;
+    bottom: 12px;
+    padding: 10px 16px;
+    max-width: calc(100vw - 24px);
+    gap: 10px;
+  }
+
+  .recording-countdown {
+    min-width: 240px;
+    padding: 30px 40px;
+  }
+
+  .recording-countdown-number {
+    font-size: 4rem;
+  }
+}
+
+/* --- Post-recording review panel (RecordingReview) --- */
+.recording-review {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(2, 6, 23, 0.78);
+  backdrop-filter: blur(4px);
+}
+
+.recording-review-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(680px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  background: rgba(15, 23, 42, 0.98);
+  border: 1px solid #27324a;
+  border-radius: 24px;
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.recording-review-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 26px;
+  border-bottom: 1px solid #27324a;
+}
+
+.recording-review-title {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 1.2rem;
+  font-weight: 800;
+}
+
+.recording-review-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 20px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+/* Preview player — never overflows, keeps 16:9 framing. The video is
+   object-fit contained so the whole frame is always visible. */
+.recording-review-video-frame {
+  width: 100%;
+  background: #050b18;
+  border: 1px solid #35415c;
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.recording-review-video {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  max-height: 60vh;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: #050b18;
+}
+
+.recording-review-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.recording-review-meta-label {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.recording-review-duration {
+  padding: 3px 10px;
+  border: 1px solid #35415c;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.85);
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.recording-review-actions {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 26px;
+  border-top: 1px solid #27324a;
+}
+
+@media (max-width: 600px) {
+  .recording-review-modal {
+    width: calc(100vw - 20px);
+  }
+
+  .recording-review-header,
+  .recording-review-body,
+  .recording-review-actions {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
 }

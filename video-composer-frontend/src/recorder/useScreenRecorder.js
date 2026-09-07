@@ -361,7 +361,7 @@ export function useScreenRecorder({ onCommit } = {}) {
       cameraStreamRef.current = null
       setCameraStream(null)
 
-      // Composite teardown on unmount: animation frame, video elements, canvas.
+            // Composite teardown on unmount: animation frame, video elements, canvas.
       if (compositeFrameRef.current) {
         cancelAnimationFrame(compositeFrameRef.current)
         compositeFrameRef.current = null
@@ -371,6 +371,10 @@ export function useScreenRecorder({ onCommit } = {}) {
         try {
           activeScreenVideo.pause()
           activeScreenVideo.srcObject = null
+          // Remove from DOM if we added it there
+          if (activeScreenVideo.parentNode) {
+            activeScreenVideo.parentNode.removeChild(activeScreenVideo)
+          }
         } catch {
           // ignore
         }
@@ -463,10 +467,14 @@ export function useScreenRecorder({ onCommit } = {}) {
     micStreamRef.current = null
     combinedStreamRef.current = null
     setMicStream(null)
-  }, [])
+    }, [])
 
-  // Build the MediaStream handed to MediaRecorder: screen video track(s)
-  // plus microphone audio track(s) (and system audio if present).
+  // Build the raw recording stream — passes the original display video track
+  // directly to MediaRecorder without any canvas compositing. This preserves
+  // Chrome's native surface switching (tab/window changes) because the original
+  // MediaStreamTrack is recorded as-is.
+  //
+  // Used when camera is OFF. No <video>, no canvas, no captureStream.
   const buildRecordingStream = useCallback(() => {
     const screen = screenStreamRef.current
     const mic = micStreamRef.current
@@ -478,6 +486,29 @@ export function useScreenRecorder({ onCommit } = {}) {
     if (mic) {
       mic.getAudioTracks().forEach((track) => stream.addTrack(track))
     }
+
+    // Log the raw display track for diagnostics
+    const displayVideoTrack = screen?.getVideoTracks()[0]
+    if (displayVideoTrack) {
+      const settings = displayVideoTrack.getSettings()
+      console.debug('[Recorder] RAW DISPLAY VIDEO TRACK:', {
+        label: displayVideoTrack.label,
+        readyState: displayVideoTrack.readyState,
+        settings: {
+          displaySurface: settings.displaySurface,
+          width: settings.width,
+          height: settings.height,
+          frameRate: settings.frameRate,
+        },
+      })
+    }
+
+    console.debug(
+      '[Recorder] Raw recording stream built — video tracks:',
+      stream.getVideoTracks().length,
+      'audio tracks:',
+      stream.getAudioTracks().length,
+    )
     return stream
   }, [])
 
@@ -487,16 +518,23 @@ export function useScreenRecorder({ onCommit } = {}) {
   // and (optional) webcam are composited onto ONE canvas whose
   // captureStream(30) provides the single video track for the recorder.
   // Audio tracks are carried over unchanged (system audio + microphone).
+  //
+  // Used when camera is ON. Requires <video> + canvas compositing.
   const buildCompositeStream = useCallback(async () => {
     const screen = screenStreamRef.current
     const camera = cameraStreamRef.current
     if (!screen) return null
 
-    // Hidden screen video element (autoplay/muted/playsInline).
+        // Hidden screen video element (autoplay/muted/playsInline).
+    // Must be appended to the DOM for "Entire Screen" captures to work —
+    // Chrome requires the video element to be in the document to receive
+    // frames from monitor surfaces.
     const screenVideo = document.createElement('video')
     screenVideo.srcObject = screen
     screenVideo.muted = true
     screenVideo.playsInline = true
+    screenVideo.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none;'
+    document.body.appendChild(screenVideo)
     screenVideoRef.current = screenVideo
     try {
       await screenVideo.play()
@@ -539,12 +577,21 @@ export function useScreenRecorder({ onCommit } = {}) {
     canvasStreamRef.current = canvasStream
     console.debug('[Recorder] Canvas stream created —', canvas.width, 'x', canvas.height, '@30fps')
 
-    // Composite render loop: screen as full background + webcam overlay.
-    // Runs via requestAnimationFrame; the id lives in compositeFrameRef.
+        // Composite render loop: screen as full background + webcam overlay.
+    // Uses requestAnimationFrame (not requestVideoFrameCallback) because RAF
+    // never stops firing — even when the video freezes during a surface switch.
+    // This guarantees the loop keeps running and picks up new frames immediately
+    // after the video re-syncs.
     const drawFrame = () => {
       compositeFrameRef.current = requestAnimationFrame(drawFrame)
       try {
-        if (screenVideo.readyState >= 2) {
+        // Surface switch may change resolution — keep canvas in sync.
+        if (screenVideo.readyState >= 2 && screenVideo.videoWidth > 0) {
+          if (canvas.width !== screenVideo.videoWidth || canvas.height !== screenVideo.videoHeight) {
+            canvas.width = screenVideo.videoWidth
+            canvas.height = screenVideo.videoHeight
+            console.debug('[Recorder] Canvas resized for new surface —', canvas.width, 'x', canvas.height)
+          }
           ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height)
         } else {
           ctx.fillStyle = '#000'
@@ -589,6 +636,18 @@ export function useScreenRecorder({ onCommit } = {}) {
   // Stop the display + mic tracks (used after a File has been finalized so
   // the captured chunks are never discarded).
   const stopScreenTracks = useCallback(() => {
+    // DIAGNOSTIC: Clean up
+    if (window.__recorderDiag) {
+      console.debug('[Recorder][DIAGNOSTIC] Cleaning up')
+      clearInterval(window.__recorderDiag.interval)
+      window.__recorderDiag.video.pause()
+      window.__recorderDiag.video.srcObject = null
+      if (window.__recorderDiag.video.parentNode) {
+        window.__recorderDiag.video.parentNode.removeChild(window.__recorderDiag.video)
+      }
+      window.__recorderDiag = null
+    }
+
     const stream = screenStreamRef.current
     if (stream) {
       stream.getTracks().forEach((track) => {
@@ -604,7 +663,7 @@ export function useScreenRecorder({ onCommit } = {}) {
 
   // Tear down the composite resources (animation loop, hidden video
   // elements, canvas stream). Idempotent — safe to call more than once.
-  const teardownComposite = useCallback(() => {
+    const teardownComposite = useCallback(() => {
     if (compositeFrameRef.current) {
       cancelAnimationFrame(compositeFrameRef.current)
       compositeFrameRef.current = null
@@ -614,6 +673,10 @@ export function useScreenRecorder({ onCommit } = {}) {
       try {
         screenVideo.pause()
         screenVideo.srcObject = null
+        // Remove from DOM if we added it there
+        if (screenVideo.parentNode) {
+          screenVideo.parentNode.removeChild(screenVideo)
+        }
       } catch {
         // ignore
       }
@@ -777,17 +840,35 @@ export function useScreenRecorder({ onCommit } = {}) {
       const usingComposite = Boolean(cameraStreamRef.current)
 
       if (usingComposite) {
-        console.debug('[Recorder] Webcam overlay enabled')
+        // Camera ON: composite screen + webcam onto one canvas stream
+        console.debug('[Recorder] Recording mode: SCREEN + WEBCAM COMPOSITE')
         recordingStream = await buildCompositeStream()
         if (!recordingStream) {
           setError('Could not prepare the webcam composite. Please try again.')
           return
         }
       } else {
-        console.debug('[Recorder] Webcam overlay disabled — recording the screen stream directly')
+        // Camera OFF: pass the raw display stream directly to MediaRecorder
+        // This preserves Chrome's native surface switching (tab/window changes)
+        console.debug('[Recorder] Recording mode: RAW DISPLAY')
         recordingStream = buildRecordingStream()
       }
       combinedStreamRef.current = recordingStream
+
+      // DIAGNOSTIC: Log MediaRecorder input tracks
+      console.debug('[Recorder][MEDIARECORDER INPUT]', {
+        videoTracks: recordingStream.getVideoTracks().map(t => ({
+          label: t.label,
+          readyState: t.readyState,
+          enabled: t.enabled,
+          muted: t.muted,
+          settings: t.getSettings?.(),
+        })),
+        audioTracks: recordingStream.getAudioTracks().map(t => ({
+          label: t.label,
+          readyState: t.readyState,
+        })),
+      })
 
       const recorder = mimeType
         ? new MediaRecorder(recordingStream, { mimeType })
@@ -821,9 +902,9 @@ export function useScreenRecorder({ onCommit } = {}) {
       mediaRecorderRef.current = recorder
       recorder.start(1000) // emit chunks periodically for safety
       if (usingComposite) {
-        console.debug('[Recorder] Composite recording started')
+        console.debug('[Recorder] Recording started (composite)')
       } else {
-        console.debug('[Recorder] Recording started (screen only)')
+        console.debug('[Recorder] Recording started (raw display)')
       }
       setRecordingState('recording')
     } catch (err) {
@@ -902,6 +983,58 @@ export function useScreenRecorder({ onCommit } = {}) {
         'audio tracks:',
         screenStream?.getAudioTracks()?.length ?? 0,
       )
+
+      // DIAGNOSTIC: Log initial display track state
+      const diagnosticVideoTrack = screenStream?.getVideoTracks()[0]
+      if (diagnosticVideoTrack) {
+        const diagSettings = diagnosticVideoTrack.getSettings()
+        console.debug('[Recorder][DISPLAY TRACK] INITIAL', {
+          label: diagnosticVideoTrack.label,
+          readyState: diagnosticVideoTrack.readyState,
+          settings: { displaySurface: diagSettings.displaySurface, width: diagSettings.width, height: diagSettings.height },
+        })
+        diagnosticVideoTrack.addEventListener('mute', () => console.debug('[Recorder][DISPLAY TRACK] MUTE'))
+        diagnosticVideoTrack.addEventListener('unmute', () => console.debug('[Recorder][DISPLAY TRACK] UNMUTE'))
+        diagnosticVideoTrack.addEventListener('ended', () => console.debug('[Recorder][DISPLAY TRACK] ENDED'))
+
+        // DIAGNOSTIC: Create video element to observe raw frames
+        const diagnosticVideo = document.createElement('video')
+        diagnosticVideo.srcObject = screenStream
+        diagnosticVideo.muted = true
+        diagnosticVideo.playsInline = true
+        diagnosticVideo.autoplay = true
+        diagnosticVideo.style.cssText = 'position:fixed;right:10px;bottom:60px;width:320px;height:180px;z-index:999999;background:black;border:3px solid red;'
+        document.body.appendChild(diagnosticVideo)
+        diagnosticVideo.play().then(() => {
+          console.debug('[Recorder][DIAGNOSTIC] Video playing')
+        }).catch(err => console.error('[Recorder][DIAGNOSTIC] Play failed:', err?.message))
+
+        // DIAGNOSTIC: Count frames
+        let frameCount = 0
+        const observeFrame = (now, metadata) => {
+          frameCount++
+          console.debug('[Recorder][RAW FRAME]', { frameCount, mediaTime: metadata.mediaTime, presentedFrames: metadata.presentedFrames })
+          if (diagnosticVideo.requestVideoFrameCallback) {
+            diagnosticVideo.requestVideoFrameCallback(observeFrame)
+          }
+        }
+        if (diagnosticVideo.requestVideoFrameCallback) {
+          diagnosticVideo.requestVideoFrameCallback(observeFrame)
+        }
+
+        // DIAGNOSTIC: Periodic status
+        const diagInterval = setInterval(() => {
+          console.debug('[Recorder][DIAGNOSTIC] STATUS', {
+            readyState: diagnosticVideoTrack.readyState,
+            videoWidth: diagnosticVideo.videoWidth,
+            videoHeight: diagnosticVideo.videoHeight,
+            currentTime: diagnosticVideo.currentTime,
+            frameCount,
+          })
+        }, 2000)
+
+        window.__recorderDiag = { video: diagnosticVideo, interval: diagInterval }
+      }
 
       if (!screenStream) throw new Error('getDisplayMedia resolved without a MediaStream')
 
@@ -1019,9 +1152,26 @@ export function useScreenRecorder({ onCommit } = {}) {
         }
       }
 
-      // --- Step 3: ready -------------------------------------------------
+            // --- Step 3: ready -------------------------------------------------
       const videoTrack = screenStream.getVideoTracks()[0]
-      if (videoTrack) videoTrack.onended = handleTrackEnded
+      if (videoTrack) {
+        videoTrack.onended = handleTrackEnded
+
+        // Surface switching (tab/window change) fires mute -> content change -> unmute.
+        // The video element may freeze on the last frame before mute; re-play on
+        // unmute so the canvas compositor picks up the new surface immediately.
+        videoTrack.onmute = () => {
+          console.debug('[Recorder] Display track muted — surface switch in progress')
+        }
+        videoTrack.onunmute = () => {
+          console.debug('[Recorder] Display track unmuted — surface switch complete')
+          const sv = screenVideoRef.current
+          if (sv) {
+            // Re-play to re-sync the video element with the new surface frames
+            sv.play().catch(() => { /* ignore: play may reject during transition */ })
+          }
+        }
+      }
 
       permissionRequestRef.current = false
       committedRef.current = false
