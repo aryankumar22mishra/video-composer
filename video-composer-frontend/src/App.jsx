@@ -612,8 +612,12 @@ function App() {
     // Trigger the compose action directly. The upload form is only mounted
     // while the Upload tab is active, so submitting the DOM form would
     // silently no-op from every other tab - call the handler instead.
-    if (timelineItems.length && !loading) {
+    if (!loading && timelineItems.length) {
       startComposition()
+      return
+    }
+    if (!timelineItems.length) {
+      setError('Add at least one clip to the timeline before composing.')
     }
   }
 
@@ -919,49 +923,6 @@ function App() {
           </div>
         </div>
 
-        <div className="composer-toolbar">
-          <div className="dimension-control">
-            <button
-              type="button"
-              ref={dimensionTriggerRef}
-              className="dimension-trigger"
-              onClick={() => setIsDimensionsOpen((open) => !open)}
-              aria-haspopup="dialog"
-              aria-expanded={isDimensionsOpen}
-              title={`Composition dimensions: ${composition.width}\u00D7${composition.height}`}
-            >
-              <svg
-                className="dimension-trigger-icon"
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                aria-hidden="true"
-              >
-                <rect x="3" y="3" width="18" height="18" rx="3" />
-                <path d="M8 3v4M16 3v4M3 8h4M3 16h4M16 21v-4M8 21v-4M21 8h-4M21 16h-4" />
-              </svg>
-              <span>{`${composition.width}\u00D7${composition.height}`}</span>
-              <span className="dimension-trigger-caret" aria-hidden="true">&#9662;</span>
-            </button>
-
-            {isDimensionsOpen && (
-              <DimensionsPopover
-                value={aspectRatioMode}
-                width={composition.width}
-                height={composition.height}
-                anchorRef={dimensionTriggerRef}
-                onSelect={handleDimensionPresetSelect}
-                onApplyCustom={handleApplyCustomDimensions}
-                onClose={handleCloseDimensions}
-              />
-            )}
-          </div>
-        </div>
-
         <div
           className="canvas-preview-wrapper"
           style={previewBoxStyle}
@@ -1020,6 +981,47 @@ function App() {
             )}
 
             <div className="timeline-controls">
+              <div className="dimension-control timeline-dimension-control">
+                <button
+                  type="button"
+                  ref={dimensionTriggerRef}
+                  className="dimension-trigger"
+                  onClick={() => setIsDimensionsOpen((open) => !open)}
+                  aria-haspopup="dialog"
+                  aria-expanded={isDimensionsOpen}
+                  title={`Composition dimensions: ${composition.width}\u00D7${composition.height}`}
+                >
+                  <svg
+                    className="dimension-trigger-icon"
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.8"
+                    strokeLinecap="round"
+                    aria-hidden="true"
+                  >
+                    <rect x="3" y="3" width="18" height="18" rx="3" />
+                    <path d="M8 3v4M16 3v4M3 8h4M3 16h4M16 21v-4M8 21v-4M21 8h-4M21 16h-4" />
+                  </svg>
+                  <span>{`${composition.width}\u00D7${composition.height}`}</span>
+                  <span className="dimension-trigger-caret" aria-hidden="true">&#9662;</span>
+                </button>
+
+                {isDimensionsOpen && (
+                  <DimensionsPopover
+                    value={aspectRatioMode}
+                    width={composition.width}
+                    height={composition.height}
+                    anchorRef={dimensionTriggerRef}
+                    onSelect={handleDimensionPresetSelect}
+                    onApplyCustom={handleApplyCustomDimensions}
+                    onClose={handleCloseDimensions}
+                  />
+                )}
+              </div>
+
               <button type="button" className="timeline-play" onClick={handleTogglePlayback} disabled={!timelineItems.length}>{isPlaying ? 'Pause' : 'Play'}</button>
               <button type="button" onClick={() => seekTo(0)}>Start</button>
               <input type="range" min="0" max={totalDuration || 1} step="0.1" value={currentTime} onChange={(event) => seekTo(Number(event.target.value))} aria-label="Timeline position" />
