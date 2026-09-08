@@ -139,6 +139,39 @@ video its real duration to FFmpeg, while images continue to use
 `image_duration`. This means a mixed timeline of a 3s image, a 10s recording,
 a 3s image, and a 7s uploaded video renders as a single ~23s output.
 
+### Dimensions control
+
+A persistent **Dimensions** control in the composer toolbar lets users set the
+composition resolution before exporting. Click the dimension button (e.g.
+`1080×1920`) to open a popover with presets and a custom input:
+
+**Presets**
+
+| Preset | Resolution | Notes |
+|---|---|---|
+| Auto | preserves current width & height | default active state |
+| YouTube | 1920×1080 | 16:9 |
+| TikTok | 1080×1920 | 9:16 |
+| Instagram | 1080×1080 | 1:1 |
+| Standard | 1440×1080 | 4:3 |
+| Portrait | 1080×1440 | 3:4 |
+
+**Custom** — enter any positive integer width and height (max 7680) and click
+*Apply dimensions*. Invalid, zero, or non-integer values are rejected inline;
+browser `alert()` is never used.
+
+`composition.width` / `composition.height` are the **single source of truth** —
+the live preview, timeline, and final export/download all derive the output
+resolution from the same values. Existing clips are not distorted on aspect
+change; they are fitted or cropped according to the composer's existing
+cover/contain rules. Clip start times, durations, and ordering are preserved
+when dimensions change.
+
+When the job is submitted, the selected `output_width` / `output_height` are sent
+to the backend alongside the existing `clip_durations`, and FFmpeg renders the
+final video at those dimensions. If no dimensions are supplied, 1280×720
+remains the fallback.
+
 ### Permission & error handling
 
 - Camera/mic/system-audio permission denials stop the flow cleanly, reset to
@@ -357,6 +390,11 @@ Then open the frontend URL shown in Terminal 4 (typically `http://localhost:5173
   seek-to-end; `clip_durations` sent, validated by Django, and passed to
   FFmpeg so videos render at their actual length while images keep
   `image_duration`
+- ✅ **Dimensions control**: OpenVid-style dimension picker in the composer
+  toolbar with Auto, YouTube (16:9), TikTok (9:16), Instagram (1:1),
+  Standard (4:3), Portrait (3:4) presets and a custom W×H input;
+  `composition.width`/`composition.height` are the single source of truth
+  for preview, timeline, and final export/download resolution
 - ✅ **Recording Setup UI**: OpenVid-style two-column modal (preview +
   settings + footer), responsive single-column on mobile
 - ✅ `npm run lint` — 0 errors; `npm run build` — succeeds

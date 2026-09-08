@@ -45,6 +45,34 @@ class VideoComposerService:
         os.makedirs(self.work_dir, exist_ok=True)
 
     # ---------------------------------------------------------
+    # Build scale/pad/crop video filter
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def _build_scale_pad_filter(width, height, fit_mode="pad"):
+        """Build an FFmpeg ``-vf`` filter for the target resolution.
+
+        pad  - scale down (preserving aspect) then letterbox onto a
+        ``width x height`` background (original behaviour).
+        crop - scale so the shorter dimension fills the target,
+        then center-crop to the exact ``width x height`` box.
+        """
+        if fit_mode == "crop":
+            return (
+                f"scale={width}:{height}:"
+                f"force_original_aspect_ratio=increase,"
+                f"crop={width}:{height}:"
+                f"(iw-{width})/2:(ih-{height})/2"
+            )
+        # Default: pad (fit + letterbox)
+        return (
+            f"scale={width}:{height}:"
+            f"force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:"
+            f"(ow-iw)/2:(oh-ih)/2"
+        )
+
+    # ---------------------------------------------------------
     # Run FFmpeg
     # ---------------------------------------------------------
 
@@ -105,6 +133,7 @@ class VideoComposerService:
         image_path,
         duration,
         resolution="1280x720",
+        fit_mode="pad",
     ):
         # Convert AVIF/WEBP/HEIC etc. to PNG first, since -loop
         # doesn't recognize those formats directly.
@@ -120,12 +149,7 @@ class VideoComposerService:
         # height = 720
         width, height = resolution.split("x")
 
-        video_filter = (
-            f"scale={width}:{height}:"
-            f"force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:"
-            f"(ow-iw)/2:(oh-ih)/2"
-        )
+        video_filter = self._build_scale_pad_filter(width, height, fit_mode)
 
         cmd = [
             "ffmpeg",
@@ -177,6 +201,7 @@ class VideoComposerService:
         video_path,
         duration,
         resolution="1280x720",
+        fit_mode="pad",
     ):
         """
         Normalize a video into the same format used by images.
@@ -191,12 +216,7 @@ class VideoComposerService:
 
         width, height = resolution.split("x")
 
-        video_filter = (
-            f"scale={width}:{height}:"
-            f"force_original_aspect_ratio=decrease,"
-            f"pad={width}:{height}:"
-            f"(ow-iw)/2:(oh-ih)/2"
-        )
+        video_filter = self._build_scale_pad_filter(width, height, fit_mode)
 
         cmd = [
             "ffmpeg",
@@ -247,6 +267,8 @@ class VideoComposerService:
         clip_paths,
         image_duration,
         clip_durations=None,
+        resolution="1280x720",
+        fit_mode="pad",
     ):
         """Normalize every clip into a uniform segment.
 
@@ -276,6 +298,8 @@ class VideoComposerService:
                 segment = self._image_to_clip(
                     path,
                     image_duration,
+                    resolution=resolution,
+                    fit_mode=fit_mode,
                 )
 
                 segments.append(segment)
@@ -297,6 +321,8 @@ class VideoComposerService:
                 segment = self._normalize_clip(
                     path,
                     video_duration,
+                    resolution=resolution,
+                    fit_mode=fit_mode,
                 )
 
                 segments.append(segment)
@@ -455,6 +481,9 @@ class VideoComposerService:
         output_path,
         image_duration=3,
         clip_durations=None,
+        target_resolution=None,
+        aspect_ratio="auto",
+        fit_mode="pad",
     ):
         """
         Compose images/videos into one video.
@@ -479,12 +508,21 @@ class VideoComposerService:
                 "Clip duration must be greater than 0."
             )
 
+        # Resolve the effective resolution box for normalisation.
+        # aspect_ratio="auto" without explicit dims -> 1280x720 legacy.
+        if target_resolution and aspect_ratio != "auto":
+            resolution = target_resolution
+        else:
+            resolution = "1280x720"
+
         # Step 1:
         # Convert/normalize all clips
         segments = self._prepare_segments(
             clip_paths,
             image_duration,
             clip_durations,
+            resolution=resolution,
+            fit_mode=fit_mode,
         )
 
         # Step 2:

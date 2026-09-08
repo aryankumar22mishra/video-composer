@@ -1,0 +1,6 @@
+canvas-preview-wrapper">
+          <canvas ref={canvasRef} width={composition.width} height={composition.height} className="canvas-preview" />
+          <p className="canvas-preview-label">Live preview</p>
+        </div>
+
+        {job?.error_message 

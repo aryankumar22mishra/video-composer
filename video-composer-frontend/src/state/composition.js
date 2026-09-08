@@ -1,8 +1,18 @@
+// Single source of truth for the composition canvas. Every consumer
+// (live preview, dimension picker, export payload) derives its sizes
+// from composition.width / composition.height — never from separate
+// per-feature state.
+export const COMPOSITION_DEFAULTS = {
+  width: 1280,
+  height: 720,
+  fps: 30,
+};
+
 export function createComposition() {
   return {
-    width: 1280,
-    height: 720,
-    fps: 30,
+    width: COMPOSITION_DEFAULTS.width,
+    height: COMPOSITION_DEFAULTS.height,
+    fps: COMPOSITION_DEFAULTS.fps,
     duration: 0,
     tracks: [
       { type: 'video', clips: [] },

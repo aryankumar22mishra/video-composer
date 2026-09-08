@@ -35,7 +35,6 @@ def compose_job_task(job_id, clip_durations=None):
             raise ValueError("No clips were attached to this job.")
 
         work_dir = os.path.join(settings.MEDIA_ROOT, "tmp", str(job.id))
-        service = VideoComposerService(work_dir=work_dir)
 
         clip_paths = [clip.file.path for clip in job.clips.all().order_by("order")]
         audio_path = job.audio.path if job.audio else None
@@ -44,7 +43,25 @@ def compose_job_task(job_id, clip_durations=None):
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, "output.mp4")
 
-        print(f"[Compose] job={job_id} image_duration={job.image_duration} clip_durations={clip_durations}")
+        service = VideoComposerService(work_dir=work_dir)
+
+        output_width = job.output_width
+        output_height = job.output_height
+        aspect_ratio = job.aspect_ratio
+        fit_mode = job.fit_mode
+
+        # Build the resolution string only when an explicit target is set.
+        # aspect_ratio='auto' with no width/height -> preserve source native.
+        target_resolution = None
+        if output_width and output_height:
+            target_resolution = f"{output_width}x{output_height}"
+
+        print(
+            f"[Compose] job={job_id} image_duration={job.image_duration} "
+            f"clip_durations={clip_durations} "
+            f"resolution={target_resolution} aspect={aspect_ratio} "
+            f"fit={fit_mode}"
+        )
 
         service.compose(
             clip_paths=clip_paths,
@@ -52,6 +69,9 @@ def compose_job_task(job_id, clip_durations=None):
             output_path=output_path,
             image_duration=job.image_duration,
             clip_durations=clip_durations,
+            target_resolution=target_resolution,
+            aspect_ratio=aspect_ratio,
+            fit_mode=fit_mode,
         )
 
         job.output_video.name = os.path.relpath(output_path, settings.MEDIA_ROOT)

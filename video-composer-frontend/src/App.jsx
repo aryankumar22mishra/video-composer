@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import './App.css'
-import { createComposition, createCompositionClip } from './state/composition'
-import { loadAssetMetadata, resolveVideoDuration } from './assets/AssetManager'
+import { createComposition, createCompositionClip, COMPOSITION_DEFAULTS } from './state/composition'
+import { loadAssetMetadata, resolveVideoDuration, revokeObjectUrlAsset } from './assets/AssetManager'
 import { findActiveClip, drawFrame, seekAndDrawVideo } from './renderer/CompositionRenderer'
 import RecordModal from './recorder/RecordModal'
 import useScreenRecorder from './recorder/useScreenRecorder'
 import RecordingControls from './recorder/RecordingControls'
 import RecordingReview from './recorder/RecordingReview'
+import DimensionsPopover from './components/DimensionsPopover'
+import Sidebar from './components/Sidebar'
+import { toEvenDimension } from './dimensions/DimensionPresets'
 
 const API_BASE = '/api'
 
@@ -29,21 +32,119 @@ function App() {
   const [clipPreviews, setClipPreviews] = useState([])
   const [selectedClipId, setSelectedClipId] = useState(null)
   const [activeTab, setActiveTab] = useState('videos')
-  const [timelineItems, setTimelineItems] = useState([]) // sequence of { clipIndex, uid }
+  const [timelineItems, setTimelineItems] = useState([])
   const [composition, setComposition] = useState(createComposition())
-  const [assetMetadata, setAssetMetadata] = useState([])
-  const [previewImages, setPreviewImages] = useState({}) // { clipIndex: HTMLImageElement }
-  const [previewVideos, setPreviewVideos] = useState({}) // { clipIndex: HTMLVideoElement }
+  const [clipDurations, setClipDurations] = useState([])
+  const [previewImages, setPreviewImages] = useState({})
+  const [previewVideos, setPreviewVideos] = useState({})
   const [isRecorderSetupOpen, setIsRecorderSetupOpen] = useState(false)
   const [recordingElapsed, setRecordingElapsed] = useState(0)
   const [countdown, setCountdown] = useState(null) // OpenVid countdown: null | 3 | 2 | 1
   const [reviewDuration, setReviewDuration] = useState(0) // duration shown in the review panel
   const recordingStartedAtRef = useRef(null)
+  // Wall-clock stop time of the last recording session + per-file measured
+  // durations. WebM blobs recorded by MediaRecorder often lack duration
+  // headers (video.duration === Infinity); when metadata probing cannot
+  // recover the length, the composer falls back to these measured values
+  // instead of wrongly applying the 3s image duration.
+  const recordingStoppedAtRef = useRef(null)
+  const recordedDurationsRef = useRef(new Map())
+
+  // Stable identity key for a clip file (name + size + last modified).
+  const clipFileKey = (file) => `${file.name}:${file.size}:${file.lastModified}`
+
+  // Measured length (seconds) of the most recent recording session:
+  // (stop wall-clock - start wall-clock). Used when the WebM blob's
+  // duration header is missing and metadata probing fails.
+  const measuredRecordingSeconds = () => {
+    if (!recordingStartedAtRef.current || !recordingStoppedAtRef.current) return null
+    const seconds = (recordingStoppedAtRef.current - recordingStartedAtRef.current) / 1000
+    return Number.isFinite(seconds) && seconds > 0.1 ? seconds : null
+  }
+
+  // onCommit: a recording was confirmed. Register it as a new clip, switch to
+  // the Videos tab so it shows up in the library, and load it into the
+  // live preview.
+  // NOTE: this must be defined BEFORE useScreenRecorder() below, since it's
+  // passed in as the onCommit callback — const declarations are not hoisted.
+  const commitRecording = (file) => {
+    setClips((prev) => [...prev, file])
+    // Remember this recording's wall-clock length: MediaRecorder WebM blobs
+    // frequently miss duration headers, so this measured value is the
+    // composer's fallback when metadata probing cannot determine the length.
+    const measured = measuredRecordingSeconds()
+    if (measured) {
+      recordedDurationsRef.current.set(clipFileKey(file), measured)
+    }
+    setActiveTab('videos')
+    setCurrentTime(0)
+    setError('')
+  }
 
   // Recorder lifecycle lives at the App level so it survives the Setup UI
   // being closed. Closing the modal during an active recording must NOT
   // stop or discard that recording.
   const recorder = useScreenRecorder({ onCommit: commitRecording })
+
+  // Output dimensions — ONE SOURCE OF TRUTH: composition.width/height.
+  // aspectRatioMode only tracks WHICH preset is active for the picker UI
+  // and the backend aspect_ratio field:
+  //   'auto' | '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | 'custom'
+  // Auto resolves to the project base size (1280x720) so the live preview
+  // and the exported video always share the same aspect ratio.
+  const [aspectRatioMode, setAspectRatioMode] = useState('auto')
+  const [isDimensionsOpen, setIsDimensionsOpen] = useState(false)
+  const dimensionTriggerRef = useRef(null)
+
+  // Preview sizing: buffers are always <= 1280px on the longest side so the
+  // composition renderer (which is resolution-aware) draws at the exact
+  // composition aspect ratio while keeping the bitmap lightweight. The
+  // canvas buffer aspect ALWAYS matches composition.width/height, so what
+  // the user sees is exactly the shape the exported video will have.
+  const previewAspectRatio = composition.width / composition.height
+  let previewWidth = 1280
+  let previewHeight = Math.round(previewWidth / previewAspectRatio)
+  if (previewHeight > 1280) {
+    previewHeight = 1280
+    previewWidth = Math.round(previewHeight * previewAspectRatio)
+  }
+  previewWidth = toEvenDimension(previewWidth) || 1280
+  previewHeight = toEvenDimension(previewHeight) || 720
+
+  // The wrapper gets explicit pixel dimensions: CSS aspect-ratio alone does
+  // not shrink a width:100% box when max-height clamps, so the bounding box
+  // would never visibly change shape without an explicit width/height.
+  const PREVIEW_MAX_HEIGHT = 260
+  const PREVIEW_MAX_WIDTH = 640
+  let previewBoxHeight = PREVIEW_MAX_HEIGHT
+  let previewBoxWidth = Math.round(previewBoxHeight * (previewWidth / previewHeight))
+  if (previewBoxWidth > PREVIEW_MAX_WIDTH) {
+    previewBoxWidth = PREVIEW_MAX_WIDTH
+    previewBoxHeight = Math.round(previewBoxWidth / (previewWidth / previewHeight))
+  }
+  const previewBoxStyle = {
+    width: `${previewBoxWidth}px`,
+    height: `${previewBoxHeight}px`,
+  }
+
+  const videoRef = useRef(null)
+  const dragIndexRef = useRef(null)
+  const hiddenVideoRefs = useRef({})
+  const canvasRef = useRef(null)
+  const uploadInputRef = useRef(null)
+
+  // Active section for the OpenVid-style left sidebar navigation.
+  // "composer" → existing editor view, "record" → RecordModal is opened.
+  const [activeSection, setActiveSection] = useState('composer')
+
+  const compositionVideoDuration = composition.tracks[0].clips.reduce(
+    (sum, clip) => sum + clip.duration,
+    0
+  )
+  const estimatedDuration = Math.max(compositionVideoDuration, audioFile ? 12 : 0)
+  const totalDuration = duration || estimatedDuration
+  const progress = totalDuration ? (currentTime / totalDuration) * 100 : 0
+  const timelineWidth = Math.max(560, totalDuration * zoom + 30)
 
   // OpenVid flow: once the screen (and any mic/camera) is ready, close
   // the setup UI and show the 3-2-1 countdown. The App-level recorder
@@ -73,68 +174,73 @@ function App() {
     return () => clearTimeout(timer)
   }, [countdown, recorder.recordingState, recorder.startRecording])
 
-  // Safety: if the recorder leaves 'ready' without starting (e.g. the
-  // user cancels during the countdown), drop the countdown UI at once.
-  useEffect(() => {
-    if (countdown && recorder.recordingState !== 'ready') {
-      setCountdown(null)
-    }
-  }, [countdown, recorder.recordingState])
-
-  // If a recording/auto-start fails AFTER the setup UI was auto-closed,
-  // bring the setup back so the friendly error is visible and the user
-  // can retry. (Cancelling is silent — no error text — so it never reopens.)
-  useEffect(() => {
-    if (
-      !countdown &&
-      recorder.recordingState === 'idle' &&
-      recorder.error
-    ) {
-      setIsRecorderSetupOpen(true)
-    }
-  }, [countdown, recorder.recordingState, recorder.error])
-
-  // Visible timer for the recording bar. Timestamp-based (not tick-based)
-  // so the elapsed time stays accurate even if background tabs throttle
-  // intervals or the user returns mid-recording. The final length is
-  // captured for the post-recording review panel.
+  // Track elapsed recording time while actively recording, and capture the
+  // exact stop wall-clock time so a committed recording can fall back to a
+  // measured duration when its WebM header lacks one.
   useEffect(() => {
     if (recorder.recordingState === 'recording') {
       recordingStartedAtRef.current = Date.now()
-      const tick = () => {
-        setRecordingElapsed(
-          Math.max(0, Math.floor((Date.now() - recordingStartedAtRef.current) / 1000)),
-        )
-      }
-      const interval = setInterval(tick, 250)
-      return () => clearInterval(interval)
+      recordingStoppedAtRef.current = null
+      const timer = setInterval(() => {
+        setRecordingElapsed(Math.floor((Date.now() - recordingStartedAtRef.current) / 1000))
+      }, 1000)
+      return () => clearInterval(timer)
     }
-    if (recordingStartedAtRef.current) {
-      setReviewDuration(
-        Math.max(0, Math.floor((Date.now() - recordingStartedAtRef.current) / 1000)),
-      )
+    if (recordingStartedAtRef.current && !recordingStoppedAtRef.current) {
+      recordingStoppedAtRef.current = Date.now()
     }
-    recordingStartedAtRef.current = null
-    setRecordingElapsed(0)
     return undefined
   }, [recorder.recordingState])
 
-  const videoRef = useRef(null)
-  const dragIndexRef = useRef(null)
-  const hiddenVideoRefs = useRef({}) // index -> HTMLVideoElement (canvas preview)
-  const hiddenVideoUrlRefs = useRef({}) // index -> object URL (lives as long as the video)
-  const canvasRef = useRef(null)
+  // ---------------- Output dimensions (single source of truth) ----------------
 
-  const estimatedDuration = Math.max(
-    composition.duration || 0,
-    timelineItems.length * imageDuration,
-    audioFile ? 12 : 0
-  )
-  const totalDuration = duration || estimatedDuration
-  const progress = totalDuration ? (currentTime / totalDuration) * 100 : 0
-  const timelineWidth = Math.max(560, totalDuration * zoom + 30)
+  // The ONLY place composition dimensions change. Updates composition.width
+  // and composition.height and nothing else: clip start times, durations,
+  // ordering, and audio timing are untouched, so the timeline keeps working
+  // exactly as before. Preview + export payload both derive from these.
+  const applyDimensions = (mode, width, height) => {
+    const evenWidth = toEvenDimension(width)
+    const evenHeight = toEvenDimension(height)
+    if (!evenWidth || !evenHeight) return
+    setAspectRatioMode(mode)
+    setComposition((prev) => ({
+      ...prev,
+      width: evenWidth,
+      height: evenHeight,
+    }))
+    setError('')
+  }
 
-  // Poll job status while pending/processing
+  // Preset card clicked in the dimensions popover. "auto" resolves to the
+  // project's base composition size so preview and export stay in sync
+  // (the backend pads every clip onto this same box in auto mode).
+  const handleDimensionPresetSelect = (preset) => {
+    if (preset.id === 'auto') {
+      applyDimensions('auto', COMPOSITION_DEFAULTS.width, COMPOSITION_DEFAULTS.height)
+    } else {
+      applyDimensions(preset.id, preset.width, preset.height)
+    }
+    setIsDimensionsOpen(false)
+  }
+
+  // "Apply dimensions" with custom W/H. The popover has already validated
+  // the values (whole numbers, 2..MAX_DIMENSION) and even-rounded them;
+  // toEvenDimension here is a defensive double-check.
+  const handleApplyCustomDimensions = (width, height) => {
+    const evenWidth = toEvenDimension(width)
+    const evenHeight = toEvenDimension(height)
+    if (!evenWidth || !evenHeight) {
+      setError('Enter a valid custom width and height first.')
+      return
+    }
+    applyDimensions('custom', evenWidth, evenHeight)
+    setIsDimensionsOpen(false)
+  }
+
+  const handleCloseDimensions = () => {
+    setIsDimensionsOpen(false)
+  }
+
   useEffect(() => {
     if (!job || !['pending', 'processing'].includes(job.status)) {
       return undefined
@@ -164,15 +270,25 @@ function App() {
     }
   }, [clips])
 
-  // Load real browser-side metadata (dimensions/duration) for each clip
+  // Probe the REAL media duration (seconds) for every clip, indexed by clip
+  // order. MediaRecorder-produced WebM recordings report Infinity until the
+  // resolveVideoDuration seek workaround runs, so this probe is what makes a
+  // 50-second recording know it is 50 seconds long. Images resolve to null
+  // (they use the configured image duration instead).
   useEffect(() => {
     let cancelled = false
 
-    Promise.all(clips.map((file) => loadAssetMetadata(file).catch((err) => {
-      console.error(err)
-      return null
-    }))).then((results) => {
-      if (!cancelled) setAssetMetadata(results)
+    Promise.all(
+      clips.map((file) =>
+        loadAssetMetadata(file)
+          .then((meta) => {
+            revokeObjectUrlAsset(meta.url) // only the duration is needed here
+            return Number.isFinite(meta.duration) && meta.duration > 0 ? meta.duration : null
+          })
+          .catch(() => null)
+      )
+    ).then((durations) => {
+      if (!cancelled) setClipDurations(durations)
     })
 
     return () => {
@@ -200,57 +316,34 @@ function App() {
     if (pending === 0) setPreviewImages({ ...newImages })
   }, [clips, clipPreviews])
 
-  // Build hidden <video> elements for video clips so the canvas can draw frames
-  // from them. MediaRecorder-produced WebM files report duration === Infinity,
-  // which makes the element unseekable — seeks are ignored and the canvas
-  // preview freezes (the file itself plays fine after FFmpeg renders it).
-  // resolveVideoDuration() applies the seek-to-end probe so every preview
-  // element becomes seekable and playback works for recordings too.
+  // Build hidden <video> elements for video clips so the canvas can draw frames from them
   useEffect(() => {
-    const urls = hiddenVideoUrlRefs.current
+    const createdUrls = []
 
     clips.forEach((file, index) => {
       if (!file.type.startsWith('video/')) return
       if (hiddenVideoRefs.current[index]) return // already created
 
       const url = URL.createObjectURL(file)
-      urls[index] = url
+      createdUrls.push(url)
 
       const video = document.createElement('video')
       video.src = url
       video.muted = true
       video.preload = 'auto'
       video.playsInline = true
+      // MediaRecorder WebM files report duration === Infinity, which leaves
+      // this element unseekable and the canvas preview stuck. The documented
+      // resolveVideoDuration seek workaround computes the real duration so
+      // the preview can play the full recording.
+      resolveVideoDuration(video).catch(() => {})
       hiddenVideoRefs.current[index] = video
       setPreviewVideos((prev) => ({ ...prev, [index]: video }))
-
-      // Fix the Infinity duration so the element can seek (and therefore
-      // play) in the canvas preview. IMPORTANT: the probe seek must happen
-      // AFTER loadedmetadata — a currentTime set before metadata loads is
-      // treated by Chrome as a start-position hint, not a real seek, and
-      // the duration fix would never engage. Fire-and-forget; failures are
-      // non-fatal.
-      const runDurationProbe = () => {
-        resolveVideoDuration(video).catch(() => {})
-      }
-      if (video.readyState >= 1) {
-        runDurationProbe()
-      } else {
-        video.addEventListener('loadedmetadata', runDurationProbe, { once: true })
-      }
     })
 
-    // Release the video element + object URL only for clips that were
-    // removed. Revoking URLs that are still in use would break playback.
-    Object.keys(hiddenVideoRefs.current).forEach((key) => {
-      const index = Number(key)
-      if (clips[index]) return
-      hiddenVideoRefs.current[index]?.pause?.()
-      delete hiddenVideoRefs.current[index]
-      const staleUrl = urls[index]
-      if (staleUrl) URL.revokeObjectURL(staleUrl)
-      delete urls[index]
-    })
+    return () => {
+      createdUrls.forEach((url) => URL.revokeObjectURL(url))
+    }
   }, [clips])
 
   // Draw the active clip (image or video frame) onto the canvas whenever
@@ -280,7 +373,7 @@ function App() {
         seekAndDrawVideo(video, ctx, canvas, sourceTime, activeClip.transform)
       }
     }
-  }, [currentTime, composition, previewImages, previewVideos, clips])
+  }, [currentTime, composition, previewImages, previewVideos, clips, previewWidth, previewHeight])
 
   // Playback loop: advances currentTime in real time while isPlaying is true
   useEffect(() => {
@@ -314,9 +407,7 @@ function App() {
     setDuration(0)
   }, [timelineItems])
 
-  const handleSubmit = async (event) => {
-    event.preventDefault()
-
+  const startComposition = async () => {
     if (!timelineItems.length) {
       setError('Please add at least one clip to the timeline.')
       return
@@ -325,31 +416,44 @@ function App() {
     setLoading(true)
     setError('')
     const formData = new FormData()
-    // Per-clip durations (Phase: duration fix), built in the SAME order the
-    // files are appended below (timelineItems order). Videos carry their
-    // real composition duration (matched by uid — never a blind index);
-    // images carry the image duration setting. The backend renders each
-    // clip for exactly this many seconds.
-    const clipDurations = []
     timelineItems.forEach((item) => {
       const file = clips[item.clipIndex]
-      if (!file) return
-      formData.append('clips', file)
-
-      const isVideo = file.type?.startsWith('video/')
-      const compositionClip = composition.tracks[0]?.clips.find(
-        (clip) => clip.id === item.uid
-      )
-      const compositionDuration = compositionClip?.duration
-      const clipDuration = isVideo && Number.isFinite(compositionDuration) && compositionDuration > 0
-        ? compositionDuration
-        : imageDuration
-      clipDurations.push(clipDuration)
+      if (file) formData.append('clips', file)
     })
     if (audioFile) formData.append('audio', audioFile)
     formData.append('image_duration', String(imageDuration))
-    formData.append('clip_durations', JSON.stringify(clipDurations))
-    console.debug('[Submit] clip_durations=', clipDurations)
+
+    // Per-clip durations (timeline order) so the backend renders every clip
+    // at its real length. Without this the backend falls back to the 3s
+    // image_duration default and squeezes long recordings down. Durations
+    // come from the composition itself, so speed changes are honored too.
+    const durationByUid = new Map(
+      composition.tracks[0].clips.map((clip) => [clip.id, clip.duration])
+    )
+    const durationsPayload = timelineItems.map((item) => {
+      const duration = durationByUid.get(item.uid) ?? imageDuration
+      return Number(Math.max(duration, 0.1).toFixed(3))
+    })
+    formData.append('clip_durations', JSON.stringify(durationsPayload))
+    console.debug('[Submit] clip_durations=', durationsPayload)
+
+    // Output dimensions come straight from the composition (single source
+    // of truth) so the exported file matches the live preview exactly.
+    // Custom/preset dims are already even (H.264 requirement); "auto"
+    // omits width/height so the backend uses its 1280x720 base box, which
+    // equals the composition's default size.
+    if (aspectRatioMode !== 'auto') {
+      formData.append('width', String(composition.width))
+      formData.append('height', String(composition.height))
+    }
+    formData.append('aspect_ratio', aspectRatioMode)
+    formData.append('fit_mode', 'pad')
+    console.debug('[Submit] dimensions=', {
+      width: aspectRatioMode === 'auto' ? null : composition.width,
+      height: aspectRatioMode === 'auto' ? null : composition.height,
+      aspect_ratio: aspectRatioMode,
+      fit_mode: 'pad',
+    })
 
     try {
       const response = await fetch(`${API_BASE}/jobs/`, {
@@ -364,6 +468,13 @@ function App() {
     } finally {
       setLoading(false)
     }
+  }
+
+  // The form keeps working on the Upload tab; the sidebar Composer button
+  // calls startComposition() directly (works from any tab).
+  const handleSubmit = (event) => {
+    event.preventDefault()
+    startComposition()
   }
 
   const seekTo = (nextTime) => {
@@ -405,24 +516,49 @@ function App() {
     )
   }
 
-  const addToTimeline = (clipIndex) => {
+  // Resolve a video clip's true length BEFORE it touches the timeline.
+  // Priority: background-probed duration -> measured recording wall-clock
+  // length (stop - start) -> an on-demand fresh probe -> image duration as
+  // the absolute last resort (videos only). The on-demand probe removes the
+  // race where the user clicks a thumbnail before the background metadata
+  // pass finishes, and covers WebM blobs whose duration header
+  // MediaRecorder omitted.
+  const resolveClipDuration = async (file, clipIndex) => {
+    if (!file?.type.startsWith('video/')) return imageDuration
+
+    const cached = clipDurations[clipIndex]
+    if (cached) return cached
+
+    const measured = file ? recordedDurationsRef.current.get(clipFileKey(file)) : undefined
+    if (measured) return measured
+
+    try {
+      const meta = await loadAssetMetadata(file)
+      revokeObjectUrlAsset(meta.url) // only the duration is needed here
+      if (Number.isFinite(meta.duration) && meta.duration > 0) {
+        setClipDurations((prev) => {
+          const next = [...prev]
+          next[clipIndex] = meta.duration
+          return next
+        })
+        return meta.duration
+      }
+    } catch {
+      // Fall through to the last resort below.
+    }
+    console.warn('[Duration] Could not determine video length, using image duration:', file.name)
+    return imageDuration
+  }
+
+  const addToTimeline = async (clipIndex) => {
+    const file = clips[clipIndex]
+    const clipDuration = await resolveClipDuration(file, clipIndex)
+    console.debug('[Timeline] added clip duration =', clipDuration, file?.name)
     const uid = `${clipIndex}-${Date.now()}-${Math.random()}`
     setTimelineItems((prev) => [...prev, { clipIndex, uid }])
     setComposition((prev) => {
       const videoTrack = prev.tracks[0]
       const startTime = videoTrack.clips.reduce((sum, clip) => sum + clip.duration, 0)
-      const file = clips[clipIndex]
-
-      // Duration policy (Phase 4):
-      //   - images keep the existing image-duration behavior
-      //   - videos use their REAL duration from the browser-loaded metadata,
-      //     falling back to imageDuration only if metadata isn't ready yet
-      const isVideo = file?.type?.startsWith('video/')
-      const metaDuration = assetMetadata[clipIndex]?.duration
-      const clipDuration = isVideo && typeof metaDuration === 'number' && Number.isFinite(metaDuration) && metaDuration > 0
-        ? metaDuration
-        : imageDuration
-
       const newClip = { ...createCompositionClip(file, clipIndex, startTime, clipDuration), id: uid, baseDuration: clipDuration }
 
       // Jump the live preview to the start of the newly added clip
@@ -439,6 +575,67 @@ function App() {
         ],
       }
     })
+  }
+
+  // ---------------- Recorder handlers ----------------
+
+  // "Use Recording" in the review panel: the recorder delivers the File to
+  // onCommit exactly once (deliveredRef guard inside the hook) — the clip is
+  // appended to the library and the review panel closes via the completed ->
+  // idle state transition.
+  const handleConfirmRecording = () => {
+    setReviewDuration(0)
+    setActiveSection('composer')
+    recorder.confirmRecording()
+  }
+
+  // "Discard Recording" in the review panel: the File was never committed, so
+  // the hook just clears its reference and returns to idle.
+  const handleDiscardRecording = () => {
+    setReviewDuration(0)
+    setActiveSection('composer')
+    recorder.discardRecording()
+  }
+
+  const closeRecorderSetup = () => {
+    setIsRecorderSetupOpen(false)
+    setActiveSection('composer')
+  }
+
+  // --- OpenVid-style sidebar navigation ---
+
+  const handleSelectComposer = () => {
+    setActiveSection('composer')
+    if (isRecorderSetupOpen) {
+      setIsRecorderSetupOpen(false)
+    }
+    // Trigger the compose action directly. The upload form is only mounted
+    // while the Upload tab is active, so submitting the DOM form would
+    // silently no-op from every other tab - call the handler instead.
+    if (timelineItems.length && !loading) {
+      startComposition()
+    }
+  }
+
+  const handleSelectRecord = () => {
+    setActiveSection('record')
+    setIsRecorderSetupOpen(true)
+  }
+
+  const handleSelectUpload = () => {
+    setActiveSection('composer')
+    // Trigger the existing file-picker input that lives in the Upload tab.
+    if (uploadInputRef.current) {
+      uploadInputRef.current.click()
+    }
+  }
+
+  // Cancel the OpenVid countdown before recording starts: stop all
+  // temporary streams and return to idle. No File can be committed
+  // because recording never started.
+  const handleCancelCountdown = () => {
+    setCountdown(null)
+    recorder.reset()
   }
 
   const removeFromTimeline = (uid) => {
@@ -506,15 +703,15 @@ function App() {
         }
         runningTime += newDuration
         return updated
-        })
+      })
 
-        return {
-          ...prev,
-          duration: runningTime,
-          tracks: [{ ...videoTrack, clips: updatedClips }, prev.tracks[1]],
-        }
+      return {
+        ...prev,
+        duration: runningTime,
+        tracks: [{ ...videoTrack, clips: updatedClips }, prev.tracks[1]],
+      }
     })
-  } 
+  }
 
   const handleDragStart = (index) => {
     dragIndexRef.current = index
@@ -547,54 +744,38 @@ function App() {
     }
   }
 
-  // Adds a freshly recorded file to the media library. Everything after
-  // this (thumbnails, hidden <video>, metadata, timeline, upload) reuses
-  // the existing `clips` pipeline unchanged.
-  // Note: this MUST stay a function declaration, not `const` arrow — it is
-  // referenced by the useScreenRecorder() hook at the top of App() (line 41),
-  // and a `const` would be in the Temporal Dead Zone there (blank page).
-  function commitRecording(file) {
-    setClips((prev) => [...prev, file])
-    setActiveTab('videos')
-    setCurrentTime(0)
-    setError('')
-  }
-
-  const closeRecorderSetup = () => {
-    setIsRecorderSetupOpen(false)
-  }
-
-  // Cancel the OpenVid countdown before recording starts: stop all
-  // temporary streams and return to idle. No File can be committed
-  // because recording never started.
-  const handleCancelCountdown = () => {
-    setCountdown(null)
-    recorder.reset()
-  }
-
   const outputVideoUrl = job?.output_video
   const statusClass = job ? `status status-${job.status}` : 'status status-idle'
   const selectedClip = composition.tracks[0].clips.find((c) => c.id === selectedClipId)
+  const durationByUid = new Map(
+    composition.tracks[0].clips.map((clip) => [clip.id, clip.duration])
+  )
+
+  // Library thumbnail duration label: videos show their real (probed or
+  // measured) length, images show the configured image duration. A video
+  // whose probe is still in flight briefly shows "…" and updates when the
+  // duration lands.
+  const thumbDurationLabel = (file, index) => {
+    if (!file?.type.startsWith('video/')) return `${imageDuration}s`
+    const duration =
+      clipDurations[index] ??
+      (file ? recordedDurationsRef.current.get(clipFileKey(file)) : undefined)
+    return duration ? formatTime(duration) : '…'
+  }
 
   return (
-    <main className="simple-app">
+    <div className="app-layout">
+      <Sidebar
+        activeSection={activeSection}
+        onSelectComposer={handleSelectComposer}
+        onSelectRecord={handleSelectRecord}
+        onSelectUpload={handleSelectUpload}
+      />
+      <main className="simple-app">
       <section className="simple-card sidebar-card">
         <div className="sidebar-header">
           <span className="sidebar-title">🎬 Compose</span>
-          <span className="sidebar-header-actions">
-            <button
-              type="button"
-              className={
-                recorder.recordingState === 'recording'
-                  ? 'record-button is-active'
-                  : 'record-button'
-              }
-              onClick={() => setIsRecorderSetupOpen(true)}
-            >
-              {recorder.recordingState === 'recording' ? '⏺ Recording' : '🎥 Record'}
-            </button>
-            <span className="sidebar-meta">{clips.length} clips · {audioFile ? 1 : 0} audio</span>
-          </span>
+          <span className="sidebar-meta">{clips.length} clips · {audioFile ? 1 : 0} audio</span>
         </div>
 
         <div className="sidebar-tabs">
@@ -641,11 +822,7 @@ function App() {
                       <span className="thumb-add-badge">+</span>
                     </button>
                     <p className="thumb-name">{file.name}</p>
-                    <p className="thumb-duration">
-                      {file.type.startsWith('video/') && assetMetadata[index] && typeof assetMetadata[index].duration === 'number' && Number.isFinite(assetMetadata[index].duration)
-                        ? `${Math.round(assetMetadata[index].duration)}s`
-                        : `${imageDuration}s`}
-                    </p>
+                    <p className="thumb-duration">{thumbDurationLabel(file, index)}</p>
                     <button
                       type="button"
                       className="thumb-remove"
@@ -658,7 +835,7 @@ function App() {
                 ))}
               </div>
             ) : (
-              <p className="sidebar-empty">No videos yet. Go to Upload to add some.</p>
+              <p className="sidebar-empty">No videos yet. Go to Upload or Record to add some.</p>
             )
           )}
 
@@ -684,10 +861,11 @@ function App() {
           )}
 
           {activeTab === 'upload' && (
-            <form onSubmit={handleSubmit} className="upload-form">
+            <form id="compose-form" onSubmit={handleSubmit} className="upload-form">
               <label className="field">
                 <span>Video or image clips</span>
                 <input
+                  ref={uploadInputRef}
                   type="file"
                   accept="image/*,video/*"
                   multiple
@@ -723,10 +901,6 @@ function App() {
               </label>
 
               {error && <p className="message error">{error}</p>}
-
-              <button type="submit" className="primary-button" disabled={loading}>
-                {loading ? 'Submitting job...' : 'Compose video'}
-              </button>
             </form>
           )}
         </div>
@@ -745,9 +919,60 @@ function App() {
           </div>
         </div>
 
-        <div className="canvas-preview-wrapper">
-          <canvas ref={canvasRef} width="1280" height="720" className="canvas-preview" />
-          <p className="canvas-preview-label">Live preview</p>
+        <div className="composer-toolbar">
+          <div className="dimension-control">
+            <button
+              type="button"
+              ref={dimensionTriggerRef}
+              className="dimension-trigger"
+              onClick={() => setIsDimensionsOpen((open) => !open)}
+              aria-haspopup="dialog"
+              aria-expanded={isDimensionsOpen}
+              title={`Composition dimensions: ${composition.width}\u00D7${composition.height}`}
+            >
+              <svg
+                className="dimension-trigger-icon"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                aria-hidden="true"
+              >
+                <rect x="3" y="3" width="18" height="18" rx="3" />
+                <path d="M8 3v4M16 3v4M3 8h4M3 16h4M16 21v-4M8 21v-4M21 8h-4M21 16h-4" />
+              </svg>
+              <span>{`${composition.width}\u00D7${composition.height}`}</span>
+              <span className="dimension-trigger-caret" aria-hidden="true">&#9662;</span>
+            </button>
+
+            {isDimensionsOpen && (
+              <DimensionsPopover
+                value={aspectRatioMode}
+                width={composition.width}
+                height={composition.height}
+                anchorRef={dimensionTriggerRef}
+                onSelect={handleDimensionPresetSelect}
+                onApplyCustom={handleApplyCustomDimensions}
+                onClose={handleCloseDimensions}
+              />
+            )}
+          </div>
+        </div>
+
+        <div
+          className="canvas-preview-wrapper"
+          style={previewBoxStyle}
+        >
+          <canvas
+            ref={canvasRef}
+            width={previewWidth}
+            height={previewHeight}
+            className="canvas-preview"
+          />
+          <p className="canvas-preview-label">Live preview &middot; {composition.width}&times;{composition.height}</p>
         </div>
 
         {job?.error_message && <p className="message error">{job.error_message}</p>}
@@ -813,18 +1038,17 @@ function App() {
                         const file = clips[item.clipIndex]
                         if (!file) return null
                         const isSelected = selectedClipId === item.uid
-                        const blockClip = composition.tracks[0]?.clips.find((clip) => clip.id === item.uid)
-                        const blockDuration = blockClip?.duration || imageDuration
+                        const itemDuration = durationByUid.get(item.uid) ?? imageDuration
                         return (
                           <div
                             key={item.uid}
                             className={isSelected ? 'timeline-block video-block selected' : 'timeline-block video-block'}
-                            style={{ width: `${Math.max(blockDuration * zoom - 4, 86)}px` }}
+                            style={{ width: `${Math.max(itemDuration * zoom - 4, 86)}px` }}
                             onClick={() => setSelectedClipId(item.uid)}
                             title="Click to select"
                           >
                             <b>{file.name}</b>
-                            <small>{formatTime(blockDuration)}</small>
+                            <small>{formatTime(itemDuration)}</small>
                             <button
                               type="button"
                               className="timeline-block-remove"
@@ -853,26 +1077,12 @@ function App() {
         )}
       </section>
 
-      <RecordingControls
-        recordingState={recorder.recordingState}
-        elapsed={recordingElapsed}
-        countdown={countdown}
-        onStop={recorder.stopRecording}
-        onStopSharing={recorder.stopScreenCapture}
-        onCancelCountdown={handleCancelCountdown}
-        notice={recorder.notice}
-        error={recorder.error}
-        micEnabled={recorder.micEnabled}
-        cameraEnabled={recorder.cameraEnabled}
-        systemAudioEnabled={recorder.systemAudioEnabled}
-      />
-
       {recorder.recordingState === 'completed' && recorder.recordingFile && (
         <RecordingReview
           file={recorder.recordingFile}
           elapsed={reviewDuration}
-          onUse={recorder.confirmRecording}
-          onDiscard={recorder.discardRecording}
+          onUse={handleConfirmRecording}
+          onDiscard={handleDiscardRecording}
         />
       )}
 
@@ -882,7 +1092,24 @@ function App() {
           onClose={closeRecorderSetup}
         />
       )}
-    </main>
+
+      {['requesting_permission', 'ready', 'recording', 'stopping', 'processing'].includes(recorder.recordingState) && (
+        <RecordingControls
+          recordingState={recorder.recordingState}
+          elapsed={recordingElapsed}
+          countdown={countdown}
+          onStop={recorder.stopRecording}
+          onStopSharing={recorder.stopScreenCapture}
+          onCancelCountdown={handleCancelCountdown}
+          notice={recorder.notice}
+          error={recorder.error}
+          micEnabled={recorder.micEnabled}
+          cameraEnabled={recorder.cameraEnabled}
+          systemAudioEnabled={recorder.systemAudioEnabled}
+        />
+      )}
+      </main>
+    </div>
   )
 }
 

@@ -89,7 +89,9 @@ export function loadVideoMetadata(file) {
 
     video.onloadedmetadata = async () => {
       try {
-        const duration = await resolveVideoDuration(video)
+        // 10s budget: seeking to the far end forces Chrome to scan the whole
+        // WebM stream; large/long recordings can take longer than a 3s scan.
+        const duration = await resolveVideoDuration(video, 10000)
         console.debug('[Duration] file=%s duration=%s', file.name, duration)
 
         // Never hand Infinity/NaN upstream as a valid duration.

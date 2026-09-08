@@ -109,6 +109,55 @@ class ComposeJobViewSet(viewsets.ModelViewSet):
         for order, f in enumerate(clip_files):
             Clip.objects.create(job=job, file=f, order=order)
 
+        # Resolution / aspect-ratio controls from the dimension panel.
+        raw_width = request.data.get("width")
+        raw_height = request.data.get("height")
+        raw_aspect = request.data.get("aspect_ratio", "auto")
+        raw_fit = request.data.get("fit_mode", "pad")
+
+        try:
+            if raw_width not in (None, ""):
+                job.output_width = int(raw_width)
+            if raw_height not in (None, ""):
+                job.output_height = int(raw_height)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "width and height must be integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # H.264 encoder requires even (divisible by 2) width and height.
+        if (
+            job.output_width is not None
+            and job.output_height is not None
+            and (
+                job.output_width % 2 != 0
+                or job.output_height % 2 != 0
+            )
+        ):
+            return Response(
+                {"detail": "width and height must both be even numbers "
+                 "(H.264 requirement)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if raw_aspect not in ("auto", "16:9", "9:16", "1:1", "4:3", "3:4", "custom"):
+            return Response(
+                {"detail": "aspect_ratio must be one of: "
+                 "auto, 16:9, 9:16, 1:1, 4:3, 3:4, custom."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if raw_fit not in ("pad", "crop"):
+            return Response(
+                {"detail": "fit_mode must be 'pad' or 'crop'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        job.aspect_ratio = raw_aspect
+        job.fit_mode = raw_fit
+        job.save(update_fields=["output_width", "output_height",
+                                "aspect_ratio", "fit_mode"])
+
         compose_job_task.delay(str(job.id), clip_durations=clip_durations)
 
         serializer = self.get_serializer(job)

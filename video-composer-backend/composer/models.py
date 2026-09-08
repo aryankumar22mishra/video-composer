@@ -24,6 +24,17 @@ class ComposeJob(models.Model):
     image_duration = models.PositiveIntegerField(default=3)
     output_video = models.FileField(upload_to="outputs/", blank=True, null=True)
     error_message = models.TextField(blank=True, null=True)
+    # Output resolution / aspect-ratio controls (client-side dimension panel).
+    # null/None = preserve source (legacy "1280x720" default below).
+    output_width = models.PositiveIntegerField(blank=True, null=True)
+    output_height = models.PositiveIntegerField(blank=True, null=True)
+    # 'auto' = preserve each source's native aspect ratio; otherwise a
+    # preset label such as '16:9', '9:16', '1:1', '4:3', '3:4' or 'custom'.
+    aspect_ratio = models.CharField(max_length=20, default="auto")
+    # How to fit the source into the target box: 'pad' = fit+letterbox onto a
+    # solid background (matches the previous 1280x720 behaviour); 'crop' =
+    # scale-and-crop-fill. Defaults to 'pad' to stay backward compatible.
+    fit_mode = models.CharField(max_length=10, default="pad")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

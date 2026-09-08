@@ -119,31 +119,43 @@ function RecordingControls({
     )
   }
 
-  // Active recording — persistent control with the stop action.
+  // Active recording — compact professional control bar.
   if (recordingState === 'recording') {
     return (
-      <div className="recording-active-bar is-recording" role="status" aria-live="polite">
-        <RecordingDot />
-        <span className="recording-active-text">
-          RECORDING {formatTime(elapsed)}
-        </span>
-        <div className="recording-active-status">
-          {micEnabled && <StatusIndicator type="mic">🎙</StatusIndicator>}
-          {systemAudioEnabled && <StatusIndicator type="audio">🔊</StatusIndicator>}
-          {cameraEnabled && <StatusIndicator type="camera">📹</StatusIndicator>}
+      <div className="recording-control-bar" role="status" aria-live="polite">
+        <div className="recording-control-main">
+          <span className="recording-control-rec-label" title="Recording" aria-label="Recording in progress">
+            <RecordingDot />
+            <span>REC</span>
+          </span>
+          <span className="recording-control-timer">{formatTime(elapsed)}</span>
         </div>
-        {message && (
-          <span className="recording-active-notice">{message}</span>
-        )}
-        <div className="recording-active-controls">
-          <button
-            type="button"
-            className="recording-active-stop"
-            onClick={handleStop}
-          >
-            ■ Stop
-          </button>
+        <span className="recording-control-separator" aria-hidden>│</span>
+        <div className="recording-control-status">
+          {micEnabled && (
+            <button type="button" className="recording-control-btn" title="Microphone ON" aria-label="Microphone ON">
+              🎤
+            </button>
+          )}
+          {systemAudioEnabled && (
+            <button type="button" className="recording-control-btn" title="System Audio ON" aria-label="System Audio ON">
+              🔊
+            </button>
+          )}
+          {cameraEnabled && (
+            <button type="button" className="recording-control-btn" title="Camera ON" aria-label="Camera ON">
+              📷
+            </button>
+          )}
         </div>
+        <button
+          type="button"
+          className="recording-control-stop"
+          onClick={handleStop}
+          title="Stop recording"
+        >
+          ■ Stop
+        </button>
       </div>
     )
   }
