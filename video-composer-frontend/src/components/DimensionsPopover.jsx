@@ -14,6 +14,7 @@
 // source of truth that drives preview AND export).
 
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   ASPECT_PRESETS,
   MAX_DIMENSION,
@@ -48,6 +49,36 @@ function DimensionsPopover({
   const [draftWidth, setDraftWidth] = useState(String(width ?? ''))
   const [draftHeight, setDraftHeight] = useState(String(height ?? ''))
   const [validationMessage, setValidationMessage] = useState('')
+
+  // Fixed position computed from the trigger button's box. The panel is
+  // rendered through a portal into <body>, so ancestor `overflow: hidden`
+  // cards (result-card, timeline-section) can never clip it out of view.
+  // Anchored so the panel's top-left sits just above the button's top-left.
+  const [placement, setPlacement] = useState(null)
+  useEffect(() => {
+    const place = () => {
+      const anchor = anchorRef.current
+      if (!anchor) return
+      const rect = anchor.getBoundingClientRect()
+      const PANEL_WIDTH = 420
+      const GAP = 10
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - PANEL_WIDTH - 8))
+      setPlacement({
+        left,
+        bottom: window.innerHeight - rect.top + GAP,
+      })
+    }
+    place()
+    window.addEventListener('resize', place)
+    return () => window.removeEventListener('resize', place)
+  }, [anchorRef])
+
+  // Position is relative to the trigger, so scrolling under the open panel
+  // would desync it — close on any scroll instead.
+  useEffect(() => {
+    window.addEventListener('scroll', onClose, true)
+    return () => window.removeEventListener('scroll', onClose, true)
+  }, [onClose])
 
   // Escape closes the popover.
   useEffect(() => {
@@ -102,8 +133,18 @@ function DimensionsPopover({
     onClose()
   }
 
-  return (
-    <div className="dimensions-popover" ref={popoverRef} role="dialog" aria-label="Dimensions">
+  // Wait for the first measured placement before painting (avoids a flash
+  // in the top-left corner of the viewport on first render).
+  if (!placement) return null
+
+  return createPortal(
+    <div
+      className="dimensions-popover"
+      ref={popoverRef}
+      role="dialog"
+      aria-label="Dimensions"
+      style={{ left: placement.left, bottom: placement.bottom }}
+    >
       <span className="dimensions-popover-title">Dimensions</span>
 
       <div className="dimensions-grid" role="group" aria-label="Aspect ratio presets">
@@ -173,7 +214,8 @@ function DimensionsPopover({
           Auto &mdash; keeps the current {width}&times;{height} composition size
         </p>
       )}
-    </div>
+    </div>,
+    document.body,
   )
 }
 

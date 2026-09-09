@@ -88,7 +88,17 @@ class ComposeJobViewSet(viewsets.ModelViewSet):
     def create(self, request, *args, **kwargs):
         clip_files = request.FILES.getlist("clips")
         audio_file = request.FILES.get("audio")
-        image_duration = int(request.data.get("image_duration", 3))
+
+        # Guard against non-integer image_duration with a 400 instead of
+        # letting int() raise a 500 for a client-controlled value.
+        raw_image_duration = request.data.get("image_duration", 3)
+        try:
+            image_duration = int(raw_image_duration)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "image_duration must be an integer."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not clip_files:
             return Response(

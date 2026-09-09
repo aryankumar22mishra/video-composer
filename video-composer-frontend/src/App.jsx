@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+﻿import { useEffect, useRef, useState } from 'react'
 import './App.css'
 import { createComposition, createCompositionClip, COMPOSITION_DEFAULTS } from './state/composition'
 import { loadAssetMetadata, resolveVideoDuration, revokeObjectUrlAsset } from './assets/AssetManager'
@@ -18,6 +18,76 @@ const formatTime = (seconds) => {
   return `${Math.floor(safeSeconds / 60)}:${String(safeSeconds % 60).padStart(2, '0')}`
 }
 
+// Centisecond-precise variant used for the playhead time bubble during drag.
+const formatTimePrecise = (seconds) => {
+  const safeSeconds = Math.max(0, seconds || 0)
+  const totalSeconds = Math.floor(safeSeconds)
+  const centiseconds = Math.floor((safeSeconds - totalSeconds) * 100)
+  return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}.${String(centiseconds).padStart(2, '0')}`
+}
+
+// Ruler label for a possibly-fractional mark time. Whole seconds use the
+// compact m:ss form; sub-second marks (high zoom) add one decimal digit.
+const formatRulerTime = (time) => {
+  const whole = Math.floor(time)
+  const fraction = time - whole
+  if (fraction > 0.001) {
+    return `${formatTime(whole)}.${Math.round(fraction * 10)}`
+  }
+  return formatTime(whole)
+}
+
+// Dynamically generated ruler marks based on totalDuration and zoom so labels
+// are never overcrowded (short timelines -> ~1s major ticks) nor too sparse
+// (long timelines -> 2s/5s/10s/15s/30s/60s/120s major ticks with minor
+// subdivisions in between). High zoom levels reveal sub-second majors.
+// Returns major + minor arrays of { time, position } where position is already
+// in timeline pixels (time * zoom). 0-duration -> empty.
+const generateRulerMarks = (duration, zoom) => {
+  if (!duration || duration <= 0 || !zoom || zoom <= 0) return { major: [], minor: [] }
+
+  // Sub-second candidates only become eligible when the zoom is high enough
+  // that a 0.1s step still leaves ~14px between labels.
+  const minStep = zoom >= 160 ? 0.1 : (zoom >= 100 ? 0.25 : (zoom >= 60 ? 0.5 : 1))
+  const candidateSteps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300]
+  const usable = candidateSteps.filter((step) => step >= minStep)
+
+  const targetLabelCount = 8
+  const rawStep = duration / targetLabelCount
+  let step = usable[usable.length - 1]
+  for (const candidate of usable) {
+    if (candidate >= rawStep) { step = candidate; break }
+  }
+
+  const major = []
+  const minor = []
+
+  // Sub-divide each major step only when whole seconds are involved AND the
+  // minor ticks keep at least ~12px of spacing. divisions = number of equal
+  // slices (produces divisions - 1 in-between minor marks).
+  let divisions = 1
+  if (step >= 2) {
+    divisions = Math.max(2, Math.min(6, Math.round((step * zoom) / 12)))
+  }
+
+  for (let time = 0; time <= duration + 0.001; time += step) {
+    const rounded = Math.round(time * 100) / 100
+    major.push({ time: rounded, position: Math.round(rounded * zoom) })
+
+    if (divisions > 1) {
+      const minorStep = step / divisions
+      for (let m = 1; m < divisions; m++) {
+        const minorTime = Math.round((time + m * minorStep) * 100) / 100
+        if (minorTime < duration) {
+          minor.push({ time: minorTime, position: Math.round(minorTime * zoom) })
+        }
+      }
+    }
+  }
+
+  return { major, minor }
+}
+
 function App() {
   const [clips, setClips] = useState([])
   const [audioFile, setAudioFile] = useState(null)
@@ -27,7 +97,7 @@ function App() {
   const [job, setJob] = useState(null)
   const [currentTime, setCurrentTime] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
-  const [zoom, setZoom] = useState(48)
+  const [zoom, setZoom] = useState(80)
   const [duration, setDuration] = useState(0)
   const [clipPreviews, setClipPreviews] = useState([])
   const [selectedClipId, setSelectedClipId] = useState(null)
@@ -96,6 +166,13 @@ function App() {
   const [isDimensionsOpen, setIsDimensionsOpen] = useState(false)
   const dimensionTriggerRef = useRef(null)
 
+  // Timeline drag state: used to distinguish a drag from a click and to keep
+  // the playhead-grabber visible only while the user is actively scrubbing.
+  const timelineCanvasRef = useRef(null)
+  const isDraggingPlayheadRef = useRef(false)
+  const wasDraggingRef = useRef(false)
+  const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false)
+
   // Preview sizing: buffers are always <= 1280px on the longest side so the
   // composition renderer (which is resolution-aware) draws at the exact
   // composition aspect ratio while keeping the bitmap lightweight. The
@@ -145,6 +222,7 @@ function App() {
   const totalDuration = duration || estimatedDuration
   const progress = totalDuration ? (currentTime / totalDuration) * 100 : 0
   const timelineWidth = Math.max(560, totalDuration * zoom + 30)
+  const rulerMarks = generateRulerMarks(totalDuration, zoom)
 
   // OpenVid flow: once the screen (and any mic/camera) is ready, close
   // the setup UI and show the 3-2-1 countdown. The App-level recorder
@@ -487,13 +565,87 @@ function App() {
 
   const handleTimelineClick = (event) => {
     const bounds = event.currentTarget.getBoundingClientRect()
-    seekTo(((event.clientX - bounds.left) / bounds.width) * totalDuration)
+    const time = ((event.clientX - bounds.left) / bounds.width) * totalDuration
+    seekTo(time)
+    // If this click is the pointerup that ended a drag, suppress the click seek
+    // (the drag already moved the playhead). Reset the flag so the next click
+    // seeks normally.
+    if (wasDraggingRef.current) {
+      wasDraggingRef.current = false
+      return
+    }
+  }
+
+  // Seek from an arbitrary pointer event — reuses the same X→time geometry as
+  // handleTimelineClick so the playhead, preview, and timeline stay perfectly
+  // synchronized. Also sets the drag flag so the subsequent click does not
+  // trigger a second seek.
+  const seekFromEvent = (event, target) => {
+    const bounds = target.getBoundingClientRect()
+    const time = ((event.clientX - bounds.left) / bounds.width) * totalDuration
+    seekTo(time)
+    if (!isDraggingPlayheadRef.current) {
+      // First pointer move during a potential drag — mark that a drag started
+      // so the following pointerup/click does not seek again.
+      isDraggingPlayheadRef.current = true
+      wasDraggingRef.current = true
+      setIsDraggingPlayhead(true)
+    }
+  }
+
+  const handlePlayheadPointerDown = (event) => {
+    // Prevent text selection / browser drag while we are grabbing the playhead.
+    event.preventDefault()
+    const canvas = timelineCanvasRef.current
+    if (!canvas) return
+    seekFromEvent(event, canvas)
+    canvas.setPointerCapture(event.pointerId)
+  }
+
+  const handlePlayheadPointerMove = (event) => {
+    if (!isDraggingPlayheadRef.current) return
+    const canvas = timelineCanvasRef.current
+    if (!canvas) return
+    seekFromEvent(event, canvas)
+  }
+
+  const handlePlayheadPointerUp = () => {
+    if (!isDraggingPlayheadRef.current) return
+    isDraggingPlayheadRef.current = false
+    setIsDraggingPlayhead(false)
   }
 
   const handleVideoMetadata = (event) => {
     setDuration(event.currentTarget.duration)
     setCurrentTime(event.currentTarget.currentTime)
   }
+
+  // While the user is dragging the playhead, attach document-level pointermove
+  // and pointerup/cancel listeners so scrubbing still works when the pointer
+  // leaves the timeline canvas. Clean up on unmount and when dragging ends.
+  useEffect(() => {
+    if (!isDraggingPlayhead) return undefined
+    const onPointerMove = (event) => {
+      if (isDraggingPlayheadRef.current) {
+        const canvas = timelineCanvasRef.current
+        if (canvas) seekFromEvent(event, canvas)
+      }
+    }
+    const onPointerUp = () => {
+      if (isDraggingPlayheadRef.current) {
+        isDraggingPlayheadRef.current = false
+        setIsDraggingPlayhead(false)
+      }
+    }
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('pointercancel', onPointerUp)
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('pointercancel', onPointerUp)
+    }
+  }, [isDraggingPlayhead])
 
   const handleVideoTimeUpdate = (event) => {
     setCurrentTime(event.currentTarget.currentTime)
@@ -505,6 +657,14 @@ function App() {
 
   const handleTogglePlayback = () => {
     setIsPlaying((prev) => !prev)
+  }
+
+  const skipBackward = () => {
+    seekTo(Math.max(0, currentTime - 5))
+  }
+
+  const skipForward = () => {
+    seekTo(Math.min(totalDuration, currentTime + 5))
   }
 
   const removeClip = (index) => {
@@ -628,10 +788,15 @@ function App() {
 
   const handleSelectUpload = () => {
     setActiveSection('composer')
-    // Trigger the existing file-picker input that lives in the Upload tab.
-    if (uploadInputRef.current) {
-      uploadInputRef.current.click()
-    }
+    // The file input lives inside the Upload tab and is only mounted while
+    // that tab is active, so switching the tab alone is not enough — from
+    // every other tab uploadInputRef is null and the click silently no-ops.
+    // Switch to the Upload tab first, then trigger the picker on the next
+    // frame once React has committed the input.
+    setActiveTab('upload')
+    requestAnimationFrame(() => {
+      uploadInputRef.current?.click()
+    })
   }
 
   // Cancel the OpenVid countdown before recording starts: stop all
@@ -933,7 +1098,6 @@ function App() {
             height={previewHeight}
             className="canvas-preview"
           />
-          <p className="canvas-preview-label">Live preview &middot; {composition.width}&times;{composition.height}</p>
         </div>
 
         {job?.error_message && <p className="message error">{job.error_message}</p>}
@@ -981,57 +1145,147 @@ function App() {
             )}
 
             <div className="timeline-controls">
-              <div className="dimension-control timeline-dimension-control">
-                <button
-                  type="button"
-                  ref={dimensionTriggerRef}
-                  className="dimension-trigger"
-                  onClick={() => setIsDimensionsOpen((open) => !open)}
-                  aria-haspopup="dialog"
-                  aria-expanded={isDimensionsOpen}
-                  title={`Composition dimensions: ${composition.width}\u00D7${composition.height}`}
+              <div className="timeline-controls-top">
+                <div
+                  className="dimension-control timeline-dimension-control"
+                  onMouseEnter={() => setIsDimensionsOpen(true)}
                 >
-                  <svg
-                    className="dimension-trigger-icon"
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                    aria-hidden="true"
+                  <button
+                    type="button"
+                    ref={dimensionTriggerRef}
+                    className="dimension-trigger"
+                    onClick={() => setIsDimensionsOpen((open) => !open)}
+                    aria-haspopup="dialog"
+                    aria-expanded={isDimensionsOpen}
+                    title={`Composition dimensions: ${composition.width}\u00D7${composition.height}`}
                   >
-                    <rect x="3" y="3" width="18" height="18" rx="3" />
-                    <path d="M8 3v4M16 3v4M3 8h4M3 16h4M16 21v-4M8 21v-4M21 8h-4M21 16h-4" />
-                  </svg>
-                  <span>{`${composition.width}\u00D7${composition.height}`}</span>
-                  <span className="dimension-trigger-caret" aria-hidden="true">&#9662;</span>
-                </button>
+                    <svg
+                      className="dimension-trigger-icon"
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      aria-hidden="true"
+                    >
+                      <rect x="3" y="3" width="18" height="18" rx="3" />
+                      <path d="M8 3v4M16 3v4M3 8h4M3 16h4M16 21v-4M8 21v-4M21 8h-4M21 16h-4" />
+                    </svg>
+                    <span>{`${composition.width}\u00D7${composition.height}`}</span>
+                    <span className="dimension-trigger-caret" aria-hidden="true">&#9662;</span>
+                  </button>
 
-                {isDimensionsOpen && (
-                  <DimensionsPopover
-                    value={aspectRatioMode}
-                    width={composition.width}
-                    height={composition.height}
-                    anchorRef={dimensionTriggerRef}
-                    onSelect={handleDimensionPresetSelect}
-                    onApplyCustom={handleApplyCustomDimensions}
-                    onClose={handleCloseDimensions}
-                  />
-                )}
+                  {isDimensionsOpen && (
+                    <DimensionsPopover
+                      value={aspectRatioMode}
+                      width={composition.width}
+                      height={composition.height}
+                      anchorRef={dimensionTriggerRef}
+                      onSelect={handleDimensionPresetSelect}
+                      onApplyCustom={handleApplyCustomDimensions}
+                      onClose={handleCloseDimensions}
+                    />
+                  )}
+                </div>
+
+                <div className="playback-bar">
+                  <span className="playback-time">{formatTime(currentTime)}</span>
+
+                  <button
+                    type="button"
+                    className="playback-skip"
+                    onClick={skipBackward}
+                    aria-label="Back 5 seconds"
+                  >
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6" />
+                    </svg>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="playback-play"
+                    onClick={handleTogglePlayback}
+                    disabled={!timelineItems.length}
+                    aria-label={isPlaying ? 'Pause' : 'Play'}
+                  >
+                    {isPlaying ? (
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <rect x="6" y="5" width="4" height="14" />
+                        <rect x="14" y="5" width="4" height="14" />
+                      </svg>
+                    ) : (
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                        <path d="M8 5v14l11-7z" />
+                      </svg>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="playback-skip"
+                    onClick={skipForward}
+                    aria-label="Forward 5 seconds"
+                  >
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      aria-hidden="true"
+                    >
+                      <path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6" />
+                    </svg>
+                  </button>
+
+                  <span className="playback-time">{formatTime(totalDuration)}</span>
+                </div>
               </div>
-
-              <button type="button" className="timeline-play" onClick={handleTogglePlayback} disabled={!timelineItems.length}>{isPlaying ? 'Pause' : 'Play'}</button>
-              <button type="button" onClick={() => seekTo(0)}>Start</button>
-              <input type="range" min="0" max={totalDuration || 1} step="0.1" value={currentTime} onChange={(event) => seekTo(Number(event.target.value))} aria-label="Timeline position" />
-              <button type="button" onClick={() => setZoom((value) => Math.max(24, value - 8))}>−</button>
-              <button type="button" onClick={() => setZoom((value) => Math.min(96, value + 8))}>+</button>
-            </div>
-
-            <div className="timeline-scroll">
-              <div className="timeline-canvas" style={{ width: `${timelineWidth}px` }} onClick={handleTimelineClick}>
-                <div className="timeline-ruler"><span />{Array.from({ length: Math.max(2, Math.ceil(totalDuration) + 1) }, (_, index) => <span key={index} style={{ left: `${index * zoom}px` }}>{formatTime(index)}</span>)}</div>
+              <div className="timeline-scroll">
+              <div
+                className="timeline-canvas"
+                style={{ width: `${timelineWidth}px` }}
+                onClick={handleTimelineClick}
+              >
+            <div className="timeline-ruler">
+                  {rulerMarks.major.map((mark) => (
+                    <span
+                      key={`major-${mark.time}`}
+                      className="timeline-ruler-mark major"
+                      style={{ left: `${mark.position}px` }}
+                    >
+                      <i aria-hidden="true" />
+                      <b>{formatRulerTime(mark.time)}</b>
+                    </span>
+                  ))}
+                  {rulerMarks.minor.map((mark) => (
+                    <span
+                      key={`minor-${mark.time}`}
+                      className="timeline-ruler-mark minor"
+                      style={{ left: `${mark.position}px` }}
+                    >
+                      <i aria-hidden="true" />
+                    </span>
+                  ))}
+                  <div
+                    className="timeline-current-chip"
+                    style={{ left: `${currentTime * zoom}px` }}
+                  >
+                    {formatTimePrecise(currentTime)}
+                  </div>
+                </div>
                 <div className="timeline-track">
                   <strong>VIDEO</strong>
                   <div className="track-content">
@@ -1072,7 +1326,10 @@ function App() {
                   </div>
                 </div>
                 <div className="timeline-track"><strong>AUDIO</strong><div className="track-content">{audioFile ? <div className="timeline-block audio-block" style={{ width: `${Math.max(12 * zoom - 4, 150)}px` }}><b>{audioFile.name}</b><small>Audio track</small></div> : <em>Optional audio track</em>}</div></div>
-                <div className="timeline-playhead" style={{ left: `${progress}%` }} />
+                <div className="timeline-playhead" style={{ left: `${76 + currentTime * zoom}px` }}>
+                  <div className="timeline-playhead-handle" />
+                </div>
+                </div>
               </div>
             </div>
           </div>
