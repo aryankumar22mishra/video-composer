@@ -1,435 +1,226 @@
 # Mini AI Video Composer
 
-A full-stack video composer that renders and exports videos **entirely in the
-browser**: image/video clips, an optional background audio track, screen
-recordings, and text overlays are composed with **React + Canvas**, encoded
-with **WebCodecs/MediaRecorder**, and muxed to **MP4 / WebM** on the client —
-no server-side encode is involved in the default flow.
+A React video editor for combining images, videos, screen recordings, background audio, and basic text overlays. The current editor previews compositions on Canvas and exports MP4 or WebM directly in the browser.
 
-The Django backend is kept for **project save/load and optional file storage**
-(`/api/projects/`). The legacy FFmpeg + Celery + Redis compose pipeline
-(`/api/jobs/`) is still present as a fallback but is not used by the
-client-side export.
+The repository also includes a Django API for storing project metadata and exported files, plus a legacy FFmpeg rendering queue. The editor currently uses browser memory and client-side export; project save/load is not wired into the UI. Despite the project name and AI Studio branding, no AI generation service is integrated.
 
-```
-new project/
-├── video-composer-backend/     ← Django + DRF (Project save/load; legacy FFmpeg path)
-└── video-composer-frontend/    ← React (Vite)
-    └── src/
-        ├── renderer/           ← Client-side composition render + exporters (WebM / MP4)
-        ├── state/              ← Composition model (clips / texts / dimensions)
-        ├── assets/             ← Media metadata (real durations, dimensions)
-        └── recorder/           ← Screen recorder module
-```
+## Quick start
 
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Frontend | React 19 + Vite 8 |
-| Client Rendering | Canvas (`drawCompositionFrame`) + WebCodecs (`VideoEncoder`/`AudioEncoder`) + `MediaRecorder` |
-| Client Muxing | `mp4-muxer`, `webm-muxer` (pure JS) |
-| Client Audio | `AudioContext` (`decodeAudioData` + `OfflineAudioContext` mix) |
-| Backend Framework | Django 4.2.x + Django REST Framework |
-| Backend Storage | SQLite (dev) + `MEDIA_ROOT` for project exports |
-| Legacy Backend Path | Celery (`--pool=solo` on Windows) + Redis + FFmpeg — kept as a fallback, unused by the default client-side flow |
-| Screen Recording | `getDisplayMedia` + `getUserMedia` + `MediaRecorder` + Canvas compositing |
-| Language | JavaScript / Python 3.12 |
-
----
-
-## How It Works, End to End
-
-### Export flow (fully client-side)
-
-1. User uploads clips (images/videos) plus optional audio, records their
-   screen, arranges clips on the timeline, and optionally adds text overlays.
-2. The **Live Preview** renders the composition onto a `<canvas>` in real time
-   via `drawCompositionFrame()` — the *exact same* function the exporter uses,
-   so the exported file can never diverge from what the user sees.
-3. Clicking **⬇ Export** in the left sidebar runs the export:
-   - **Audio** — every clip's audio and the background track are decoded to
-     PCM and mixed into one time-aligned buffer (`AudioPipeline.js`).
-   - **MP4 (default, fast)** — WebCodecs `VideoEncoder` (H.264) +
-     `AudioEncoder` (AAC) draw frames as fast as possible and mux via
-     `mp4-muxer`.
-   - **WebM** — either the fast WebCodecs/`webm-muxer` path or, on browsers
-     without WebCodecs, a real-time `MediaRecorder` capture of an offscreen
-     canvas (zero dependencies, works everywhere).
-4. When the render finishes, the result card shows two buttons: **⬇ Download
-   WebM** and **⬇ Download MP4**. Clicking one downloads that format
-   (re-rendering the other format first if needed).
-5. The timeline (video/audio tracks + playhead, adaptive time ruler,
-   horizontal scroll, click-to-seek) is driven by one shared `currentTime`,
-   so preview, playhead, and export always agree.
-
-### Screen recording flow
-
-1. User clicks the **🎥 Record** button in the sidebar to open the
-   **Recording Setup** modal.
-2. They configure camera (shape/size/mirror/position), microphone, and system
-   audio, then click **Share screen**.
-3. The browser's native screen-picker opens (`getDisplayMedia`). After a
-   source is selected, the optional microphone (`getUserMedia({ audio })`) and
-   camera (`getUserMedia({ video })`) permissions are requested in order.
-4. A live preview shows the shared screen with the webcam composited on top.
-5. Clicking **Start recording** begins capturing:
-   - **Screen only** — the screen stream is recorded directly
-   - **Screen + webcam** — screen and camera are composited onto a single
-     `canvas` whose `captureStream(30)` provides **one video track** to
-     `MediaRecorder` (browsers cannot reliably encode two video tracks)
-   - Audio tracks (system audio from the screen stream + microphone) are
-     carried onto the final stream unchanged
-6. Clicking **Stop recording** finalizes the `MediaRecorder`, builds a `Blob`
-   → `File` (`screen-recording-<timestamp>.webm`), and commits it via
-   `onCommit(file)`.
-7. The recording enters the **exact same `clips[]` pipeline** as an uploaded
-   video — My Videos → timeline → canvas preview → client-side export — with
-   its real duration preserved end to end (MediaRecorder WebM files have their
-   `Infinity` duration resolved via a seek-to-end probe).
-
----
-
-## Screen Recorder
-
-The recorder lives in `src/recorder/` as two files:
-
-| File | Role |
-|---|---|
-| `useScreenRecorder.js` | Owns all browser recording internals: screen/mic/camera streams, `MediaRecorder`, canvas compositing, chunk collection, `Blob`→`File`, cleanup, and the state machine |
-| `RecordModal.jsx` | Presentation-only OpenVid-style UI: live preview, camera/mic/system-audio settings, and the state-driven footer |
-
-### Recording combinations supported
-
-| | Screen | Mic | System audio | Webcam |
-|---|---|---|---|---|
-| ✅ | ✅ | | | |
-| ✅ | ✅ | ✅ | | |
-| ✅ | ✅ | | ✅ | |
-| ✅ | ✅ | | | ✅ |
-| ✅ | ✅ | ✅ | ✅ | |
-| ✅ | ✅ | ✅ | | ✅ |
-| ✅ | ✅ | | ✅ | ✅ |
-| ✅ | ✅ | ✅ | ✅ | ✅ |
-
-### State machine
-
-`idle` → `requesting_permission` → `ready` → `recording` → `stopping` →
-`processing` → `completed`, with `error` reachable from any state.
-
-### Webcam overlay
-
-The camera is composited onto the screen using a dedicated canvas (never the
-composer canvas). The overlay supports:
-
-- **Shape** — Squircle (rounded square), Circle, Square
-- **Size** — S (18%), M (25%), L (32%) of canvas width
-- **Mirror** — horizontal flip of the webcam only (screen is never mirrored)
-- **Position** — Top Left / Top Right / Bottom Left / Bottom Right
-
-A cover-style center crop preserves the camera's aspect ratio with no
-stretching or black bars.
-
-### Duration handling
-
-Recorded WebM files produced by Chrome's `MediaRecorder` do not declare a
-duration in their header, so a `<video>` element reports `duration ===
-Infinity`. The frontend resolves the real duration with a seek-to-end
-workaround (`currentTime = 1e101` → wait for `durationchange` → read the true
-value), guaranteeing recordings display and render at their actual length.
-
-The frontend also sends a `clip_durations` array (one duration per clip, in
-submission order) with every job. The backend validates it and passes each
-video its real duration to FFmpeg, while images continue to use
-`image_duration`. This means a mixed timeline of a 3s image, a 10s recording,
-a 3s image, and a 7s uploaded video renders as a single ~23s output.
-
-### Dimensions control
-
-A persistent **Dimensions** control in the composer toolbar lets users set the
-composition resolution before exporting. Click the dimension button (e.g.
-`1080×1920`) to open a popover with presets and a custom input:
-
-**Presets**
-
-| Preset | Resolution | Ratio |
-|---|---|---|
-| Auto | preserves current width & height | native |
-| Wide | 1920×1080 | 16:9 |
-| Vertical | 1080×1920 | 9:16 |
-| Square | 1080×1080 | 1:1 |
-| Classic | 1440×1080 | 4:3 |
-| Social | 1080×1350 | 4:5 |
-| Cinema | 2560×1080 | 21:9 |
-| Portrait | 1080×1620 | 2:3 |
-
-**Custom** — enter any positive integer width and height (max 7680) and click
-*Apply dimensions*. Invalid, zero, or non-integer values are rejected inline;
-browser `alert()` is never used.
-
-`composition.width` / `composition.height` are the **single source of truth** —
-the live preview, timeline, and final export/download all derive the output
-resolution from the same values. Existing clips are not distorted on aspect
-change; they are fitted or cropped according to the composer's existing
-cover/contain rules. Clip start times, durations, and ordering are preserved
-when dimensions change.
-
-The browser exports the final video at exactly `composition.width` ×
-`composition.height` — the same values the live preview uses. If no preset is
-selected ("Auto"), the project base size (1280×720) is used.
-
-### Permission & error handling
-
-- Camera/mic/system-audio permission denials stop the flow cleanly, reset to
-  `idle`, show a friendly message, and never call `onCommit()`.
-- Browser-native "Stop sharing" finalizes the recording exactly once and
-  cleans up all tracks.
-- A disconnected camera mid-recording drops the webcam overlay and continues
-  recording screen + audio, with a non-blocking notice.
-- Cancel / Escape / backdrop close / component unmount all stop every active
-  track and animation frame — no camera or microphone LED stays on.
-
-### Cleanup
-
-Every teardown path releases: screen stream, mic stream, camera stream,
-combined/canvas streams, `MediaRecorder`, hidden video elements, the
-recording canvas, the animation frame, and all event listeners.
-
----
-
-## Backend
-
-### Data Models
-
-**`Project`** (used by the client-side flow)
-- `id` — UUID, primary key
-- `name` — display name
-- `composition` — JSON object matching the frontend composition model
-- `export_file` — optional uploaded MP4/WebM for hosting/sharing
-- `created_at` / `updated_at` — timestamps
-
-**`ComposeJob`** (legacy server-side flow, kept for compatibility)
-- `id` — UUID, primary key
-- `status` — `pending` → `processing` → `completed` / `failed`
-- `audio` — optional audio file
-- `image_duration` — seconds each image clip is shown for (default: 3)
-- `output_video` — final rendered video file
-- `error_message` — populated if the job fails
-- `created_at` / `updated_at` — timestamps
-
-**`Clip`**
-- `job` — foreign key to `ComposeJob`
-- `file` — the uploaded image or video file
-- `order` — position in the final video sequence
-
-### API Endpoints
-
-All routes are under `/api/jobs/` (DRF `DefaultRouter`):
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/api/jobs/` | Upload clips + optional audio, starts a background job |
-| `GET` | `/api/jobs/` | List all jobs |
-| `GET` | `/api/jobs/{id}/` | Get one job's status/details |
-| `DELETE` | `/api/jobs/{id}/` | Delete a job |
-
-**`POST` request format** (`multipart/form-data`):
-- `clips` — one or more files (images/videos/recordings)
-- `audio` — single audio file (optional)
-- `image_duration` — seconds per image (optional, default 3)
-- `clip_durations` — JSON array of per-clip durations in seconds, in the
-  same order as `clips` (optional; videos use their real duration, images
-  use `image_duration`). Example: `[3, 10, 3, 7]`
-
-`clip_durations` is validated server-side: it must be a JSON array whose
-length matches the clip count, containing only positive finite numbers ≤ 1800
-(30 minutes). Malformed values are rejected with `400 Bad Request`. When the
-field is absent, the job falls back to the legacy `image_duration` behavior
-for every clip (backward compatible with older clients).
-
-**Response codes:**
-- `202 Accepted` — job created and queued (not `201`, since the resource
-  — the finished video — isn't ready yet)
-- `400 Bad Request` — no clips provided, or invalid `clip_durations`
-
-### Architecture Notes
-
-- **Video composition logic is isolated** in
-  `composer/services/ffmpeg_service.py` behind a single
-  `compose(clip_paths, audio_path, output_path)` method. An AI-based video
-  generator can later be swapped in behind the same interface without
-  changing the API or view layer.
-- **Processing is fully asynchronous.** The original version ran FFmpeg
-  synchronously inside the HTTP request, blocking the server on large jobs.
-  This was refactored to use Celery + Redis so the API responds instantly
-  and a background worker does the actual work.
-
-### FFmpeg composition
-
-`ffmpeg_service.py` normalizes every clip into a uniform segment, then
-concatenates them and overlays audio:
-
-- **Images** → `_image_to_clip(path, image_duration)` — converted to a
-  segment lasting `image_duration` seconds
-- **Videos** → `_normalize_clip(path, duration)` — rendered for their real
-  `duration` (from `clip_durations`), normalized to 1280×720, 30 FPS, H.264
-
----
-
-## Frontend
-
-Built with React 19 + Vite 8. Key modules:
-
-| File | Role |
-|---|---|
-| `src/App.jsx` | Dashboard: media library, upload form, timeline editor, job polling, submission |
-| `src/state/composition.js` | Composition model (`createComposition`, `createCompositionClip`) |
-| `src/assets/AssetManager.js` | Reads real media metadata (dimensions/duration) from files, including the WebM Infinity-duration workaround |
- | `src/renderer/CompositionRenderer.js` | Draws the active composition clip onto the canvas preview (shared with the exporter so output always matches preview) |
-| `src/renderer/AudioPipeline.js` | Decodes clip + background audio to PCM and mixes them into one time-aligned buffer for export |
-| `src/renderer/webmExporter.js` | Real-time client-side export: offscreen canvas → `captureStream` → `MediaRecorder` → WebM (zero-dep fallback) |
-| `src/renderer/mp4Exporter.js` | Fast non-real-time client-side export: WebCodecs `VideoEncoder`/`AudioEncoder` → MP4/VP9 via `mp4-muxer`/`webm-muxer` |
-| `src/renderer/useClientExport.js` | Orchestrates the full export: MP4 (fast, WebCodecs) → WebM fallback chain, progress, cancel, format-specific downloads |
-| `src/recorder/useScreenRecorder.js` | Screen recorder hook (streams, MediaRecorder, canvas compositing, state machine) |
-| `src/recorder/RecordModal.jsx` | Recording Setup modal (OpenVid-style two-column UI) |
-
-### My Videos / media library
-
-Uploaded and recorded files appear together in one library. Each card shows a
-thumbnail (images) or a 🎬 placeholder (videos) with its **real duration**
-fetched from the file metadata. Clicking a card adds it to the timeline.
-
-### Timeline editor
-
-VIDEO/AUDIO tracks, playhead, play/pause, zoom in/out, click-to-seek — all
-driven by one shared `currentTime` state so the video and timeline always stay
-in sync. Timeline blocks are sized to each clip's actual duration.
-
-### Screen recorder UI
-
-Opened from the **🎥 Record** sidebar button, the Recording Setup modal uses
-a two-column layout: a large live preview (shared screen with webcam bubble
-overlay) on the left, and Camera / Microphone / System Audio settings cards
-on the right. The webcam preview responds live to shape, size, mirror, and
-position changes via CSS only — the recording canvas stays authoritative. On
-mobile (≤900px) the modal collapses to a single scrolling column.
-
-`vite.config.js` proxies `/api` and `/media` requests to
-`http://localhost:8000` during development, so the frontend can talk to
-the Django backend without CORS issues.
-
----
-
-## ⚠️ Critical Windows Note: Celery Worker Pool
-
-Celery's default worker pool (`prefork`) relies on Unix-style process
-forking, which Windows does not support the same way. Running the worker
-without `--pool=solo` causes every spawned worker process to crash
-immediately with `PermissionError: [WinError 5] Access is denied` — tasks
-get accepted ("received") but never actually run, leaving jobs stuck on
-`pending` forever.
-
-**Always start the worker with `--pool=solo` on Windows:**
-```powershell
-python -m celery -A video_composer worker -l info --pool=solo
-```
-
----
-
-## Local Setup (Windows)
-
-### 1. Backend setup
-
-```powershell
-cd video-composer-backend
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python manage.py migrate
-python manage.py createsuperuser   # optional, for /admin/
-```
-
-Make sure **FFmpeg** is installed and on PATH (`ffmpeg -version` should work).
-
-### 2. Frontend setup
+To use the current editor, start just the frontend from the repository root:
 
 ```powershell
 cd video-composer-frontend
-npm install
-```
-
-### 3. Running everything — 4 terminals needed
-
-**Terminal 1 — Redis**
-```powershell
-& "C:\Program Files\Redis\redis-server.exe" "C:\Program Files\Redis\redis.windows.conf"
-```
-
-**Terminal 2 — Django server**
-```powershell
-cd video-composer-backend
-.\venv\Scripts\Activate.ps1
-python manage.py runserver
-```
-
-**Terminal 3 — Celery worker**
-```powershell
-cd video-composer-backend
-.\venv\Scripts\Activate.ps1
-python -m celery -A video_composer worker -l info --pool=solo
-```
-
-**Terminal 4 — Frontend dev server**
-```powershell
-cd video-composer-frontend
+npm ci
 npm run dev
 ```
 
-Then open the frontend URL shown in Terminal 4 (typically `http://localhost:5173`).
+Open the URL printed by Vite, normally `http://localhost:5173`. Django, Redis, Celery, and FFmpeg are not required for this workflow.
 
----
+Requirements:
 
-## Verified So Far
+- Node.js matching `^20.19.0 || >=22.12.0`, as required by the installed Vite, React plugin, and Oxlint packages, plus npm.
+- A browser with Canvas, Web Audio, and MediaRecorder support. Fast export additionally requires WebCodecs and the requested codecs.
+- Screen recording requires browser capture support and screen, microphone, or camera permissions for the sources you enable. Use localhost for local development.
 
-- ✅ Backend: models, serializers, admin, URLs, FFmpeg composition service
-- ✅ Synchronous version tested end-to-end (upload → completed video)
-- ✅ Refactored to async processing with Celery + Redis
-- ✅ Confirmed `202 Accepted` returned immediately with `status: "pending"`
-- ✅ Confirmed background worker completes jobs (`pending` → `completed`
-  in ~1.7s without blocking the initial request)
-- ✅ Frontend: upload form, job polling, and timeline/video sync all working
-- ✅ Diagnosed and fixed a real Windows Celery bug (`--pool=solo` requirement)
-- ✅ **Screen recording**: screen-only, screen + mic, screen + webcam, and all
-  8 combinations record correctly and commit a real WebM `File`
-- ✅ **Webcam compositing**: screen + camera rendered to a single canvas
-  video track with shape/size/mirror/position controls
-- ✅ **Duration fix**: recorded WebM `Infinity` duration resolved via
-  seek-to-end; `clip_durations` sent, validated by Django, and passed to
-  FFmpeg so videos render at their actual length while images keep
-  `image_duration`
-- ✅ **Dimensions control**: OpenVid-style dimension picker in the composer
-  toolbar with Auto, YouTube (16:9), TikTok (9:16), Instagram (1:1),
-  Standard (4:3), Portrait (3:4) presets and a custom W×H input;
-  `composition.width`/`composition.height` are the single source of truth
-  for preview, timeline, and final export/download resolution
-- ✅ **Recording Setup UI**: OpenVid-style two-column modal (preview +
-  settings + footer), responsive single-column on mobile
-- ✅ `npm run lint` — 0 errors; `npm run build` — succeeds
+## Using the editor
 
----
+1. Open **My media > Upload** and choose image or video files. Optionally select one background audio file and set the image duration (default: 3 seconds).
+2. Switch to **Videos** and click a media card to append it to the timeline. Uploaded files and confirmed screen recordings share the same library. A file can be added more than once.
+3. Use the preview transport to play, pause, or seek. Drag the playhead or adjust timeline zoom to navigate. Select a clip to resize it with the preview handles, adjust its duration with the timeline arrow controls, or remove it from the timeline.
+4. Use **Add text** on the TEXT track to insert a centered, three-second placeholder overlay at the playhead. Text content and styling controls are not currently exposed in the UI.
+5. Open the dimensions control beside the preview transport to choose an output preset or custom size.
+6. Click **Export** in the left navigation. The export panel shows progress and a cancel action, then WebM and MP4 download buttons. Requesting a different format starts another render when needed.
 
-## Known Gaps / Next Steps
+Media files, composition state, and export object URLs are held in browser memory. Refreshing the page loses the current editing session; download the result before closing it.
 
-- ❌ **No authentication** — the API is currently open to anyone
-- ❌ **No automated tests** — `tests.py` is still empty; needs coverage for
-  job creation, the pending → processing → completed flow, failure
-  handling, and the new `clip_durations` validation
-- ❌ **No cleanup of temporary files** after processing completes
-- ❌ **File validation is extension-based only**, not real content/MIME-type
-  checking
-- ❌ **No retry strategy decided** for transient vs. genuine processing
-  failures
-- 🔲 Production hardening not yet done: environment variables, Postgres
-  instead of SQLite, proper Redis/Celery deployment config
+### Screen recording
+
+1. Click **Record** and configure the camera, microphone, and system audio. Camera settings include device, shape, size, mirroring, and corner position.
+2. Click **Share screen**, select a screen/window/tab in the browser picker, and grant any enabled microphone/camera permissions.
+3. The setup modal closes and a **3-2-1 countdown** starts recording automatically. The recording lifecycle belongs to `App`, so closing the setup UI does not end an active recording.
+4. Click **Stop** in the recording controls. Review the captured video, then choose **Use Recording** to add it to the media library or **Discard** to abandon it.
+5. Click the recording's media card to add it to the timeline.
+
+Screen-only capture records the display stream directly. With a camera enabled, the hook first attempts an OffscreenCanvas compositor in a Web Worker. If the worker path is unavailable, it falls back to separate screen and camera recorders. The current review/commit UI consumes only the primary recording, so the fallback does not add the separate webcam recording to the composition.
+
+System audio availability depends on the browser, operating system, and selected capture source. When both system audio and microphone tracks are available, the hook uses Web Audio to mix them. Recorded WebM duration is resolved through metadata probing, with measured recording time as an additional fallback.
+
+### Output dimensions
+
+The composition starts at **1280 x 720, 30 FPS**. Preview and exporters derive their canvas sizes from `composition.width` and `composition.height`.
+
+| Preset | Resolution | Displayed ratio |
+| --- | --- | --- |
+| Auto | 1280 x 720 | Resets to the project default |
+| Wide | 1920 x 1080 | 16:9 |
+| Vertical | 1080 x 1920 | 9:16 |
+| Square | 1080 x 1080 | 1:1 |
+| Classic | 1440 x 1080 | 4:3 |
+| Social | 1080 x 1350 | 4:5 |
+| Cinema | 2560 x 1080 | 21:9 |
+| Portrait | 1080 x 1620 | 2:3 |
+
+Custom inputs accept whole numbers from 2 to 7680 and round to even dimensions for encoding. **Both client exporters currently reject dimensions above 3840 pixels on either side**, even though the picker accepts larger values. Export duration is capped at **30 minutes** by the audio pipeline. Browser codec and memory limits may be lower.
+
+## Architecture
+
+| Area | Implementation |
+| --- | --- |
+| Editor | React 19, Vite 8, JavaScript, CSS |
+| Composition | In-memory video/audio tracks, clip timing/transforms, text overlays, and output dimensions |
+| Preview and export drawing | Shared Canvas renderer in `CompositionRenderer.js` |
+| Export audio | Web Audio decoding and `OfflineAudioContext` mixing |
+| Fast MP4 export | WebCodecs H.264/AAC with `mp4-muxer` |
+| Fast WebM export | WebCodecs VP9/Opus with `webm-muxer` |
+| Real-time export fallback | Canvas `captureStream` and MediaRecorder |
+| Recorder | Browser media capture, MediaRecorder, optional worker compositor |
+| Optional API | Django 4.2, Django REST Framework, SQLite, local media storage |
+| Legacy render queue | Celery 5.4, Redis, FFmpeg |
+
+### Client export flow
+
+```text
+Local files / confirmed recording
+  -> media library -> composition timeline
+  -> shared Canvas renderer + decoded/mixed audio
+  -> WebCodecs MP4
+       -> on failure: WebCodecs WebM
+            -> on failure/unavailable: real-time MediaRecorder WebM
+  -> in-memory result -> download
+```
+
+An explicit WebM request starts with the WebM branch. Keep the tab visible during real-time export. The audio mix follows the video composition duration: shorter background audio leaves silence, and longer background audio is trimmed. Audio that the browser cannot decode is skipped.
+
+The fallback chain stays entirely in the browser; it does not submit a Django job. An MP4 request can produce WebM when MP4 encoding fails. The current download handler names files using the requested format, so a fallback result can receive a `.mp4` filename despite containing WebM.
+
+### Source map
+
+| Path | Role |
+| --- | --- |
+| [src/App.jsx](video-composer-frontend/src/App.jsx) | Editor state, media library, preview playback, timeline, recording lifecycle, and export UI |
+| [src/state/composition.js](video-composer-frontend/src/state/composition.js) | Composition, clip, and text defaults and factories |
+| [src/assets/AssetManager.js](video-composer-frontend/src/assets/AssetManager.js) | File metadata, duration probing, and object URL helpers |
+| [src/components/Sidebar.jsx](video-composer-frontend/src/components/Sidebar.jsx) | My media, Record, and Export navigation |
+| [src/components/DimensionsPopover.jsx](video-composer-frontend/src/components/DimensionsPopover.jsx) | Dimension picker currently mounted by `App` |
+| [src/dimensions/DimensionPresets.js](video-composer-frontend/src/dimensions/DimensionPresets.js) | Shared presets and even-dimension helpers |
+| [src/dimensions/DimensionPanel.jsx](video-composer-frontend/src/dimensions/DimensionPanel.jsx) | Earlier dimension panel, currently not mounted by `App` |
+| [src/renderer/](video-composer-frontend/src/renderer/) | Shared renderer, audio pipeline, MP4/WebM exporters, and `useClientExport` hook |
+| [src/recorder/](video-composer-frontend/src/recorder/) | Capture hook, setup modal, countdown/controls, review UI, and compositor worker |
+| [composer/](video-composer-backend/composer/) | Django models, API views/serializers, migrations, and Celery task |
+| [composer/services/ffmpeg_service.py](video-composer-backend/composer/services/ffmpeg_service.py) | Legacy clip normalization, concatenation, and background audio rendering |
+| [video_composer/](video-composer-backend/video_composer/) | Django settings, root URLs, and Celery configuration |
+
+## Optional backend setup
+
+Use the backend when developing the project storage API or legacy server rendering. Python 3.12 is the version used by the local environments in this checkout.
+
+From the repository root, in PowerShell:
+
+```powershell
+cd video-composer-backend
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python manage.py migrate
+python manage.py runserver
+```
+
+On macOS/Linux, activate the environment with `source .venv/bin/activate` instead. Create an admin account with `python manage.py createsuperuser` if needed, then visit `http://localhost:8000/admin/`.
+
+The API runs at `http://localhost:8000/api/`. Vite forwards `/api` and `/media` requests to `http://localhost:8000` through [vite.config.js](video-composer-frontend/vite.config.js).
+
+Current configuration is in [settings.py](video-composer-backend/video_composer/settings.py):
+
+| Setting | Development value |
+| --- | --- |
+| Database | `video-composer-backend/db.sqlite3` |
+| Uploaded/generated files | `video-composer-backend/media/` |
+| Media URL | `/media/` |
+| Celery broker and results | `redis://localhost:6379/0` |
+
+There is no application `.env` loader configured. Project exports are stored under `media/projects/<project-id>/exports/`; legacy jobs use `media/uploads/`, `media/tmp/`, and `media/outputs/`.
+
+### Project storage API
+
+| Method | Endpoint | Behavior |
+| --- | --- | --- |
+| GET | `/api/projects/` | List projects, newest update first |
+| POST | `/api/projects/` | Create a project |
+| GET | `/api/projects/{id}/` | Retrieve a project |
+| PUT / PATCH | `/api/projects/{id}/` | Update supplied project fields |
+| DELETE | `/api/projects/{id}/` | Delete a project record |
+
+Writes accept `multipart/form-data` or form-encoded fields, not an `application/json` request body:
+
+- `name`: optional display name; defaults to `Untitled project`.
+- `composition`: JSON-encoded object as a form field.
+- `export_file`: optional rendered video upload, using multipart form data.
+
+Responses include `id`, `name`, `composition`, `export_file`, `created_at`, and `updated_at`. Create/update currently return **200 OK**. The API stores composition JSON and an optional output file; it does not upload the source media referenced by the composition or restore local browser `File` objects.
+
+### Legacy server rendering
+
+This API remains available for direct callers. To enable it, install FFmpeg on PATH (`ffmpeg -version` should succeed), start Redis on port 6379, and run Django plus a Celery worker.
+
+In a separate PowerShell terminal, from the repository root:
+
+```powershell
+cd video-composer-backend
+.\.venv\Scripts\Activate.ps1
+python -m celery -A video_composer worker -l info --pool=solo
+```
+
+Use `--pool=solo` for the Windows worker. The worker reads its broker configuration from Django settings.
+
+| Method | Endpoint | Behavior |
+| --- | --- | --- |
+| POST | `/api/jobs/` | Upload clips and queue a render; returns `202 Accepted` |
+| GET | `/api/jobs/` | List jobs |
+| GET | `/api/jobs/{id}/` | Read status, output URL, and errors |
+| DELETE | `/api/jobs/{id}/` | Delete a job record |
+
+Job creation uses `multipart/form-data`:
+
+| Field | Description |
+| --- | --- |
+| `clips` | One or more image/video files, repeated under the same field name |
+| `audio` | Optional background audio file |
+| `image_duration` | Integer seconds per image; default `3` |
+| `clip_durations` | Optional JSON array with one positive finite duration per clip, each at most 1800 seconds |
+| `width`, `height` | Optional output dimensions; provide both as positive even integers |
+| `aspect_ratio` | `auto`, `16:9`, `9:16`, `1:1`, `4:3`, `3:4`, or `custom` |
+| `fit_mode` | `pad` (default) or `crop` |
+
+Jobs transition from `pending` to `processing`, then `completed` or `failed`. Poll the detail endpoint to read `output_video` or `error_message`.
+
+Images use `image_duration`; videos use `clip_durations` when supplied, otherwise they also use `image_duration`. The FFmpeg service uses explicit dimensions only when `aspect_ratio` is not `auto`; otherwise it falls back to 1280 x 720. Preset labels alone do not select a resolution in the service. Use `aspect_ratio=custom` with explicit `width` and `height` for a custom output size.
+
+The legacy job payload does not support the browser composition's text overlays or full clip transform model.
+
+## Development checks
+
+From `video-composer-frontend/`:
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start Vite with hot reload |
+| `npm run lint` | Run Oxlint |
+| `npm run build` | Build the frontend into `dist/` |
+| `npm run preview` | Serve the built frontend locally |
+
+From `video-composer-backend/`, with its environment activated:
+
+```powershell
+python manage.py check
+python manage.py test
+```
+
+The backend's `composer/tests.py` is currently a scaffold with no test cases, and the frontend has no automated test script. Lint/build checks do not verify media playback, recording permissions, or output quality. For manual verification, compose an image and a short video, add background audio, change dimensions, export, and inspect the downloaded video and audio. Repeat with a confirmed screen recording.
+
+## Current limitations
+
+- Project save/load and source-media persistence are not integrated into the editor.
+- Basic text insertion is available, but editing text content/style is unfinished. Undo/redo stores composition snapshots, while the media library and timeline item list have separate state.
+- The dimension picker permits values beyond the exporters' 3840-pixel cap. MP4 fallback and webcam recording fallback have the limitations described above.
+- The backend uses development settings (`DEBUG=True`, a development secret, SQLite) and has no API access restrictions configured.
+- Legacy media handling classifies files by extension. Temporary/output file cleanup and task retry policy are not implemented.

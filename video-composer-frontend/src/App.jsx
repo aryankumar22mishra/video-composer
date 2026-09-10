@@ -109,12 +109,16 @@ function App() {
   const [clipPreviews, setClipPreviews] = useState([])
   const [selectedClipId, setSelectedClipId] = useState(null)
   const [activeTab, setActiveTab] = useState('videos')
+  const [isMediaPanelCollapsed, setIsMediaPanelCollapsed] = useState(false)
+  const [isExportPanelOpen, setIsExportPanelOpen] = useState(false)
   const [timelineItems, setTimelineItems] = useState([])
   const [selectedTextId, setSelectedTextId] = useState(null)
   const [composition, setComposition] = useState(createComposition())
+  const compositionHistoryRef = useRef({ past: [], future: [], last: JSON.stringify(composition), restoring: false })
   const [clipDurations, setClipDurations] = useState([])
   const [previewImages, setPreviewImages] = useState({})
   const [previewVideos, setPreviewVideos] = useState({})
+  const [isClipSettingsOpen, setIsClipSettingsOpen] = useState(false)
   const [isRecorderSetupOpen, setIsRecorderSetupOpen] = useState(false)
   const [recordingElapsed, setRecordingElapsed] = useState(0)
   const [countdown, setCountdown] = useState(null) // OpenVid countdown: null | 3 | 2 | 1
@@ -127,6 +131,40 @@ function App() {
   // instead of wrongly applying the 3s image duration.
   const recordingStoppedAtRef = useRef(null)
   const recordedDurationsRef = useRef(new Map())
+  const previewResizeRef = useRef(null)
+
+  useEffect(() => {
+    const serialized = JSON.stringify(composition)
+    const history = compositionHistoryRef.current
+    if (serialized === history.last) return
+    if (history.restoring) {
+      history.restoring = false
+    } else {
+      history.past.push(JSON.parse(history.last))
+      history.future = []
+    }
+    history.last = serialized
+  }, [composition])
+
+  const undoComposition = () => {
+    const history = compositionHistoryRef.current
+    const previous = history.past.pop()
+    if (!previous) return
+    history.future.push(composition)
+    history.restoring = true
+    history.last = JSON.stringify(previous)
+    setComposition(previous)
+  }
+
+  const redoComposition = () => {
+    const history = compositionHistoryRef.current
+    const next = history.future.pop()
+    if (!next) return
+    history.past.push(composition)
+    history.restoring = true
+    history.last = JSON.stringify(next)
+    setComposition(next)
+  }
 
   // Stable identity key for a clip file (name + size + last modified).
   const clipFileKey = (file) => `${file.name}:${file.size}:${file.lastModified}`
@@ -199,8 +237,8 @@ function App() {
   // The wrapper gets explicit pixel dimensions: CSS aspect-ratio alone does
   // not shrink a width:100% box when max-height clamps, so the bounding box
   // would never visibly change shape without an explicit width/height.
-  const PREVIEW_MAX_HEIGHT = 260
-  const PREVIEW_MAX_WIDTH = 640
+  const PREVIEW_MAX_HEIGHT = 420
+  const PREVIEW_MAX_WIDTH = 900
   let previewBoxHeight = PREVIEW_MAX_HEIGHT
   let previewBoxWidth = Math.round(previewBoxHeight * (previewWidth / previewHeight))
   if (previewBoxWidth > PREVIEW_MAX_WIDTH) {
@@ -220,7 +258,7 @@ function App() {
 
   // Active section for the OpenVid-style left sidebar navigation.
   // "composer" → existing editor view, "record" → RecordModal is opened.
-  const [activeSection, setActiveSection] = useState('composer')
+  const [activeSection, setActiveSection] = useState('media')
 
   const compositionVideoDuration = composition.tracks[0].clips.reduce(
     (sum, clip) => sum + clip.duration,
@@ -870,6 +908,8 @@ function App() {
 
   const handleSelectComposer = () => {
     setActiveSection('composer')
+    setIsExportPanelOpen(true)
+    setIsMediaPanelCollapsed(false)
     if (isRecorderSetupOpen) {
       setIsRecorderSetupOpen(false)
     }
@@ -886,11 +926,20 @@ function App() {
 
   const handleSelectRecord = () => {
     setActiveSection('record')
+    setIsExportPanelOpen(false)
     setIsRecorderSetupOpen(true)
   }
 
+  const handleSelectMedia = () => {
+    setActiveSection('media')
+    setIsExportPanelOpen(false)
+    setIsRecorderSetupOpen(false)
+    setIsMediaPanelCollapsed(false)
+  }
+
   const handleSelectUpload = () => {
-    setActiveSection('composer')
+    setActiveSection('media')
+    setIsExportPanelOpen(false)
     // The file input lives inside the Upload tab and is only mounted while
     // that tab is active, so switching the tab alone is not enough — from
     // every other tab uploadInputRef is null and the click silently no-ops.
@@ -949,6 +998,61 @@ function App() {
         prev.tracks[1],
       ],
     }))
+  }
+
+  const updateSelectedClipScale = (scale) => {
+    if (!selectedClipId) return
+    setComposition((prev) => ({
+      ...prev,
+      tracks: [
+        {
+          ...prev.tracks[0],
+          clips: prev.tracks[0].clips.map((clip) =>
+            clip.id === selectedClipId
+              ? { ...clip, transform: { ...clip.transform, scale: Math.max(0.25, Math.min(3, scale)) } }
+              : clip
+          ),
+        },
+        prev.tracks[1],
+      ],
+    }))
+  }
+
+  const handlePreviewResizeStart = (event) => {
+    if (!selectedClip) return
+    event.preventDefault()
+    previewResizeRef.current = {
+      startX: event.clientX,
+      startScale: selectedClip.transform?.scale ?? 1,
+    }
+    const handleMove = (moveEvent) => {
+      const resize = previewResizeRef.current
+      if (!resize) return
+      updateSelectedClipScale(resize.startScale + (moveEvent.clientX - resize.startX) / 180)
+    }
+    const handleUp = () => {
+      previewResizeRef.current = null
+      window.removeEventListener('pointermove', handleMove)
+      window.removeEventListener('pointerup', handleUp)
+    }
+    window.addEventListener('pointermove', handleMove)
+    window.addEventListener('pointerup', handleUp)
+  }
+
+  const trimSelectedClip = (amount) => {
+    if (!selectedClipId) return
+    setComposition((prev) => {
+      let runningTime = 0
+      const clips = prev.tracks[0].clips.map((clip) => {
+        const duration = clip.id === selectedClipId
+          ? Math.max(0.25, clip.duration + amount)
+          : clip.duration
+        const next = { ...clip, duration, startTime: runningTime }
+        runningTime += duration
+        return next
+      })
+      return { ...prev, duration: runningTime, tracks: [{ ...prev.tracks[0], clips }, prev.tracks[1]] }
+    })
   }
 
   const updateSelectedClipSpeed = (speed) => {
@@ -1060,44 +1164,63 @@ function App() {
     return duration ? formatTime(duration) : '…'
   }
 
+  const mediaProgress = (file, index) => {
+    if (!file?.type.startsWith('video/')) return 100
+    return clipDurations[index] || recordedDurationsRef.current.has(clipFileKey(file)) ? 100 : 65
+  }
+
   return (
     <div className="app-layout">
       <Sidebar
         activeSection={activeSection}
         onSelectComposer={handleSelectComposer}
         onSelectRecord={handleSelectRecord}
-        onSelectUpload={handleSelectUpload}
+        onSelectMedia={handleSelectMedia}
       />
       <main className="simple-app">
-      <section className="simple-card sidebar-card">
+      <section className={isMediaPanelCollapsed ? 'simple-card sidebar-card is-collapsed' : 'simple-card sidebar-card'}>
         <div className="sidebar-header">
-          <span className="sidebar-title">🎬 Compose</span>
-          <span className="sidebar-meta">{clips.length} clips · {audioFile ? 1 : 0} audio</span>
+          <div>
+            <p className="sidebar-kicker">Media library</p>
+            <h2 className="sidebar-title">My media</h2>
+          </div>
+          <button
+            type="button"
+            className="sidebar-collapse"
+            onClick={() => setIsMediaPanelCollapsed((collapsed) => !collapsed)}
+            aria-label={isMediaPanelCollapsed ? 'Expand media panel' : 'Collapse media panel'}
+            aria-expanded={!isMediaPanelCollapsed}
+            title={isMediaPanelCollapsed ? 'Expand media panel' : 'Collapse media panel'}
+          >
+            {isMediaPanelCollapsed ? '›' : '‹'}
+          </button>
         </div>
 
-        <div className="sidebar-tabs">
-          <button
-            type="button"
-            className={activeTab === 'videos' ? 'sidebar-tab active' : 'sidebar-tab'}
-            onClick={() => setActiveTab('videos')}
-          >
-            🎞 My Videos
-          </button>
-          <button
-            type="button"
-            className={activeTab === 'audio' ? 'sidebar-tab active' : 'sidebar-tab'}
-            onClick={() => setActiveTab('audio')}
-          >
-            🎵 My Audio
-          </button>
-          <button
-            type="button"
-            className={activeTab === 'upload' ? 'sidebar-tab active' : 'sidebar-tab'}
-            onClick={() => setActiveTab('upload')}
-          >
-            ⬆ Upload
-          </button>
-        </div>
+        {!isMediaPanelCollapsed && !isExportPanelOpen && (
+          <>
+            <div className="sidebar-tabs" role="tablist" aria-label="Media types">
+              <button
+                type="button"
+                className={activeTab === 'videos' ? 'sidebar-tab active' : 'sidebar-tab'}
+                onClick={() => setActiveTab('videos')}
+              >
+                ▦&nbsp; My Videos
+              </button>
+              <button
+                type="button"
+                className={activeTab === 'audio' ? 'sidebar-tab active' : 'sidebar-tab'}
+                onClick={() => setActiveTab('audio')}
+              >
+                ♫&nbsp; My Audio
+              </button>
+              <button
+                type="button"
+                className={activeTab === 'upload' ? 'sidebar-tab active' : 'sidebar-tab'}
+                onClick={() => setActiveTab('upload')}
+              >
+                ⇧&nbsp; Upload
+              </button>
+            </div>
 
         <div className="sidebar-body">
           {activeTab === 'videos' && (
@@ -1118,8 +1241,13 @@ function App() {
                       )}
                       <span className="thumb-add-badge">+</span>
                     </button>
-                    <p className="thumb-name">{file.name}</p>
-                    <p className="thumb-duration">{thumbDurationLabel(file, index)}</p>
+                    <div className="thumb-details">
+                      <p className="thumb-name">{file.name}</p>
+                      <p className="thumb-duration">{thumbDurationLabel(file, index)}</p>
+                      <div className="thumb-progress" role="progressbar" aria-valuenow={mediaProgress(file, index)} aria-valuemin="0" aria-valuemax="100">
+                        <span style={{ width: `${mediaProgress(file, index)}%` }} />
+                      </div>
+                    </div>
                     <button
                       type="button"
                       className="thumb-remove"
@@ -1201,18 +1329,55 @@ function App() {
             </form>
           )}
         </div>
+          </>
+        )}
+
+        {!isMediaPanelCollapsed && isExportPanelOpen && (
+          <div className="export-panel" aria-label="Export options">
+            <div className="export-panel-heading">
+              <span>Export</span>
+              <span className={statusClass}>{statusLabel}</span>
+            </div>
+
+            {clientExport.exporting && (
+              <div className="export-panel-progress" role="status" aria-live="polite">
+                <div className="export-progress-bar">
+                  <div className="export-progress-fill" style={{ width: `${Math.round((clientExport.progress || 0) * 100)}%` }} />
+                </div>
+                <p>{clientExport.message}</p>
+                <button type="button" className="delete-job" onClick={clientExport.cancel}>Cancel export</button>
+              </div>
+            )}
+
+            {clientExport.error && <p className="message error">{clientExport.error}</p>}
+
+            {clientExport.status === 'done' && outputVideoUrl && (
+              <>
+                <p className="message success">Export ready. Choose a format.</p>
+                <div className="export-format-options">
+                  <button type="button" className="export-format-button" onClick={() => handleDownloadFormat(EXPORT_FORMATS.WEBM)} disabled={clientExport.exporting}>
+                    <strong>WebM</strong><span>Download</span>
+                  </button>
+                  <button type="button" className="export-format-button" onClick={() => handleDownloadFormat(EXPORT_FORMATS.MP4)} disabled={clientExport.exporting}>
+                    <strong>MP4</strong><span>Download</span>
+                  </button>
+                </div>
+                <button type="button" className="delete-job export-clear-button" onClick={handleDeleteJob}>Clear export</button>
+              </>
+            )}
+
+            {!clientExport.exporting && clientExport.status !== 'done' && !clientExport.error && (
+              <p className="export-panel-empty">Click Export to render your timeline.</p>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="simple-card result-card">
         <div className="result-heading compact">
-          <p><strong>Export:</strong> {outputMimeType ? outputMimeType.split(';')[0] : 'browser render'}</p>
-          <div className="result-heading-actions">
-            <span className={statusClass}>{statusLabel}</span>
-            {(clientExport.result || clientExport.status === 'error') && (
-              <button type="button" className="delete-job" onClick={handleDeleteJob}>
-                Clear
-              </button>
-            )}
+          <div className="editor-history-actions" aria-label="Edit history">
+            <button type="button" className="editor-icon-button" onClick={undoComposition} title="Undo" aria-label="Undo">↶</button>
+            <button type="button" className="editor-icon-button" onClick={redoComposition} title="Redo" aria-label="Redo">↷</button>
           </div>
         </div>
 
@@ -1226,6 +1391,17 @@ function App() {
             height={previewHeight}
             className="canvas-preview"
           />
+          {selectedClip && (
+            <>
+              <button
+                type="button"
+                className="preview-resize-handle"
+                onPointerDown={handlePreviewResizeStart}
+                aria-label="Resize selected clip"
+                title="Drag to resize selected clip"
+              />
+            </>
+          )}
         </div>
 
         {/* Synced preview audio: plays the uploaded audio with the shared
@@ -1241,82 +1417,12 @@ function App() {
           />
         )}
 
-        {clientExport.error && <p className="message error">{clientExport.error}</p>}
-
-        {clientExport.exporting && (
-          <div className="export-progress" role="status" aria-live="polite">
-            <div className="export-progress-bar">
-              <div
-                className="export-progress-fill"
-                style={{ width: `${Math.round((clientExport.progress || 0) * 100)}%` }}
-              />
-            </div>
-            <p className="export-progress-message">{clientExport.message}</p>
-            <button type="button" className="delete-job" onClick={clientExport.cancel}>
-              Cancel export
-            </button>
-          </div>
-        )}
-
-        {clientExport.status === 'done' && outputVideoUrl && (
-          <>
-            <p className="message success">Export ready — choose a format to download.</p>
-            <div className="export-actions">
-              <button
-                type="button"
-                className="primary-button download-link"
-                disabled={clientExport.exporting}
-                onClick={() => handleDownloadFormat(EXPORT_FORMATS.WEBM)}
-              >
-                ⬇ Download WebM
-              </button>
-              <button
-                type="button"
-                className="primary-button download-link"
-                disabled={clientExport.exporting}
-                onClick={() => handleDownloadFormat(EXPORT_FORMATS.MP4)}
-              >
-                ⬇ Download MP4
-              </button>
-            </div>
-          </>
-        )}
-
-        {job?.status === 'completed' && !outputVideoUrl && (
-          <p className="message warning">The job completed without an output video URL.</p>
-        )}
-
         {(timelineItems.length > 0 || audioFile) && (
           <div className="timeline-section compact">
-            {selectedClipId && selectedClip && (
-              <div className="clip-inspector">
-                <span>Opacity</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={selectedClip.transform?.opacity ?? 1}
-                  onChange={(e) => updateSelectedClipOpacity(Number(e.target.value))}
-                />
-                <span>Speed</span>
-                <input
-                  type="range"
-                  min="0.25"
-                  max="3"
-                  step="0.25"
-                  value={selectedClip.speed ?? 1}
-                  onChange={(e) => updateSelectedClipSpeed(Number(e.target.value))}
-                />
-                <span className="speed-label">{selectedClip.speed ?? 1}x</span>
-              </div>
-            )}
-
             <div className="timeline-controls">
               <div className="timeline-controls-top">
                 <div
                   className="dimension-control timeline-dimension-control"
-                  onMouseEnter={() => setIsDimensionsOpen(true)}
                 >
                   <button
                     type="button"
@@ -1425,6 +1531,7 @@ function App() {
               <div
                 className="timeline-canvas"
                 style={{ width: `${timelineWidth}px` }}
+                ref={timelineCanvasRef}
                 onClick={handleTimelineClick}
               >
             <div className="timeline-ruler">
@@ -1454,7 +1561,7 @@ function App() {
                     {formatTimePrecise(currentTime)}
                   </div>
                 </div>
-                <div className="timeline-track">
+                <div className="timeline-track text-track">
                   <strong>VIDEO</strong>
                   <div className="track-content">
                     {timelineItems.length ? (
@@ -1471,8 +1578,11 @@ function App() {
                             onClick={() => setSelectedClipId(item.uid)}
                             title="Click to select"
                           >
+                            <button type="button" className="timeline-trim-handle timeline-trim-start" onClick={(event) => { event.stopPropagation(); trimSelectedClip(-0.25) }} aria-label="Trim clip start">‹</button>
+                            {clipPreviews[item.clipIndex] && <img src={clipPreviews[item.clipIndex]} className="timeline-thumb" alt="" aria-hidden="true" />}
                             <b>{file.name}</b>
                             <small>{formatTime(itemDuration)}</small>
+                            <button type="button" className="timeline-trim-handle timeline-trim-end" onClick={(event) => { event.stopPropagation(); trimSelectedClip(0.25) }} aria-label="Trim clip end">›</button>
                             <button
                               type="button"
                               className="timeline-block-remove"
@@ -1493,8 +1603,9 @@ function App() {
                     )}
                   </div>
                 </div>
-                <div className="timeline-track"><strong>AUDIO</strong><div className="track-content">{audioFile ? <div className="timeline-block audio-block" style={{ width: `${Math.max(12 * zoom - 4, 150)}px` }}><b>{audioFile.name}</b><small>Audio track</small></div> : <em>Optional audio track</em>}</div></div>
-                <div className="timeline-playhead" style={{ left: `${76 + currentTime * zoom}px` }}>
+                <div className="timeline-track"><strong>TEXT</strong><div className="track-content"><button type="button" className="timeline-add-track" onClick={handleAddText}>T&nbsp; + Add text</button>{composition.texts?.map((text) => <div key={text.id} className="timeline-block text-block" style={{ width: `${Math.max(text.duration * zoom - 4, 86)}px` }}><b>{text.content}</b><small>Text overlay</small></div>)}</div></div>
+                <div className="timeline-track"><strong>AUDIO</strong><div className="track-content"><button type="button" className="timeline-add-track" onClick={handleSelectUpload}>♫&nbsp; + Add audio</button>{audioFile && <div className="timeline-block audio-block" style={{ width: `${Math.max(12 * zoom - 4, 150)}px` }}><b>{audioFile.name}</b><small>Audio track</small></div>}</div></div>
+                <div className="timeline-playhead" style={{ left: `${76 + currentTime * zoom}px` }} onPointerDown={handlePlayheadPointerDown} onPointerMove={handlePlayheadPointerMove} onPointerUp={handlePlayheadPointerUp}>
                   <div className="timeline-playhead-handle" />
                 </div>
                 </div>

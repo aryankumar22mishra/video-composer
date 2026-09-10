@@ -1,4 +1,4 @@
-// Persistent left navigation — OpenVid-style sidebar.
+// Persistent left navigation — compact icon rail.
 //
 // Exposes the three primary actions:
 //   Export   → returns to / indicates the active composer (export) view
@@ -54,11 +54,11 @@ function SidebarIcon({ name }) {
   return null
 }
 
-function Sidebar({ activeSection, onSelectComposer, onSelectRecord, onSelectUpload }) {
+function Sidebar({ activeSection, onSelectComposer, onSelectRecord, onSelectMedia }) {
   const items = [
-    { key: 'composer', label: 'Export', icon: 'export', onClick: onSelectComposer },
+    { key: 'media', label: 'My media', icon: 'upload', onClick: onSelectMedia },
     { key: 'record', label: 'Record', icon: 'record', onClick: onSelectRecord },
-    { key: 'upload', label: 'Upload', icon: 'upload', onClick: onSelectUpload },
+    { key: 'composer', label: 'Export', icon: 'export', onClick: onSelectComposer },
   ]
 
   return (
@@ -80,6 +80,8 @@ function Sidebar({ activeSection, onSelectComposer, onSelectRecord, onSelectUplo
               type="button"
               className={activeSection === item.key ? 'app-sidebar-item is-active' : 'app-sidebar-item'}
               onClick={item.onClick}
+              disabled={item.disabled}
+              title={item.label}
               aria-current={activeSection === item.key ? 'page' : undefined}
             >
               <SidebarIcon name={item.icon} />
