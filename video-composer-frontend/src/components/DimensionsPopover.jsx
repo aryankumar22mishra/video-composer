@@ -53,25 +53,44 @@ function DimensionsPopover({
   // Fixed position computed from the trigger button's box. The panel is
   // rendered through a portal into <body>, so ancestor `overflow: hidden`
   // cards (result-card, timeline-section) can never clip it out of view.
-  // Anchored so the panel's top-left sits just above the button's top-left.
+  // Anchored above the button, but clamped to the viewport: the panel is
+  // taller than the space above the trigger when near the top of the page,
+  // so the final top is measured from the rendered panel's real height.
   const [placement, setPlacement] = useState(null)
   useEffect(() => {
     const place = () => {
       const anchor = anchorRef.current
       if (!anchor) return
       const rect = anchor.getBoundingClientRect()
-      const PANEL_WIDTH = 420
-      const GAP = 10
-      const left = Math.max(8, Math.min(rect.left, window.innerWidth - PANEL_WIDTH - 8))
-      setPlacement({
-        left,
-        bottom: window.innerHeight - rect.top + GAP,
-      })
+      const GAP = 8
+      const panelHeight = popoverRef.current?.offsetHeight ?? 0
+      const maxListTop = 8
+      const preferredTop = rect.top - panelHeight - GAP
+      const top = Math.max(maxListTop, Math.min(preferredTop, window.innerHeight - panelHeight - 8))
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - 320 - 8))
+      setPlacement({ top, left, measuredHeight: 0 })
     }
     place()
     window.addEventListener('resize', place)
     return () => window.removeEventListener('resize', place)
   }, [anchorRef])
+
+  // Re-measure once after the panel paints: the first pass runs before the
+  // portal exists (height 0), so the clamped top would be wrong. Only update
+  // when the measured height actually changed — prevents a re-render loop.
+  useEffect(() => {
+    const anchor = anchorRef.current
+    const panel = popoverRef.current
+    if (!anchor || !panel || !placement) return
+    const rect = anchor.getBoundingClientRect()
+    const GAP = 8
+    const panelHeight = panel.offsetHeight
+    if (panelHeight === placement.measuredHeight) return
+    const preferredTop = rect.top - panelHeight - GAP
+    const top = Math.max(8, Math.min(preferredTop, window.innerHeight - panelHeight - 8))
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - 320 - 8))
+    setPlacement({ top, left, measuredHeight: panelHeight })
+  }, [placement, anchorRef])
 
   // Position is relative to the trigger, so scrolling under the open panel
   // would desync it — close on any scroll instead.
@@ -143,23 +162,42 @@ function DimensionsPopover({
       ref={popoverRef}
       role="dialog"
       aria-label="Dimensions"
-      style={{ left: placement.left, bottom: placement.bottom }}
+      style={{ top: placement.top, left: placement.left }}
     >
       <span className="dimensions-popover-title">Dimensions</span>
 
-      <div className="dimensions-grid" role="group" aria-label="Aspect ratio presets">
-        {ASPECT_PRESETS.map((preset) => (
-          <button
-            key={preset.id}
-            type="button"
-            className={value === preset.id ? 'dimensions-card selected' : 'dimensions-card'}
-            onClick={() => handlePresetClick(preset)}
-            aria-pressed={value === preset.id}
-          >
-            <b>{preset.label}</b>
-            <small>{preset.badge}</small>
-          </button>
-        ))}
+      <div className="dimensions-list" role="listbox" aria-label="Aspect ratio presets">
+        {ASPECT_PRESETS.map((preset) => {
+          // A preset is active when the applied aspect matches AND, for the
+          // presets that share the backend value 'custom' (Social 4:5 /
+          // Cinema 21:9 / Portrait 2:3), the resolution matches too.
+          const presetAspect = preset.aspect ?? preset.id
+          const isActive = value === presetAspect
+            && (preset.width == null || (width === preset.width && height === preset.height))
+          return (
+            <button
+              key={preset.id}
+              type="button"
+              role="option"
+              aria-selected={isActive}
+              className={`dimensions-row${isActive ? ' selected' : ''}`}
+              onClick={() => handlePresetClick(preset)}
+            >
+              <span className="dimensions-check" aria-hidden="true">
+                {isActive ? '✓' : ''}
+              </span>
+              <span className="dimensions-glyph" aria-hidden="true">
+                <span className={`aspect-frame aspect-frame--${preset.frame ?? 'auto'}`} />
+              </span>
+              <span className="dimensions-row-text">
+                <b>
+                  {preset.label} <small>{preset.badge}</small>
+                </b>
+                <small className="dimensions-row-desc">{preset.description}</small>
+              </span>
+            </button>
+          )
+        })}
       </div>
 
 

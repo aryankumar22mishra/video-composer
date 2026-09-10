@@ -245,8 +245,10 @@ class VideoComposerService:
             "-pix_fmt",
             "yuv420p",
 
-            # Remove audio
-            "-an",
+            # NOTE: audio is intentionally preserved here (-an is NOT used)
+            # so recorded clip audio (system audio + mic from screen
+            # recordings) survives concatenation and reaches the final output.
+            # Images have no audio track, so they pass through unaffected.
 
             # Reset timestamps
             "-start_at_zero",
@@ -461,6 +463,13 @@ class VideoComposerService:
             # Encode audio
             "-c:a",
             "aac",
+
+            # Pad the audio with silence so it spans the FULL video length.
+            # Combined with -shortest the output then always ends at the
+            # video's end instead of being truncated to the (often shorter)
+            # uploaded audio; the video stream is never cut short.
+            "-af",
+            "apad",
 
             # Stop when shortest input ends
             "-shortest",

@@ -5,13 +5,65 @@ from rest_framework import viewsets, status
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 
-from .models import ComposeJob, Clip
-from .serializers import ComposeJobSerializer
+from .models import ComposeJob, Clip, Project
+from .serializers import ComposeJobSerializer, ProjectSerializer
 from .tasks import compose_job_task
 
 # Upper bound for a single clip duration (seconds) — rejects absurd client
 # values while leaving generous headroom for long screen recordings.
 MAX_CLIP_DURATION = 1800  # 30 minutes
+
+
+class ProjectViewSet(viewsets.ModelViewSet):
+    """Save / load client-rendered projects (no Celery/FFmpeg involved).
+
+    POST/PUT accept ``name`` + ``composition`` (JSON object matching the
+    frontend's composition model) and optionally ``export_file`` (the
+    browser-rendered MP4/WebM to host for download/sharing).
+    """
+
+    queryset = Project.objects.all().order_by("-updated_at")
+    serializer_class = ProjectSerializer
+    parser_classes = [MultiPartParser, FormParser]
+    http_method_names = ["get", "post", "put", "patch", "delete"]
+
+    def _composition_from_request(self):
+        raw = self.request.data.get("composition")
+        if raw in (None, ""):
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _save_project(self, project):
+        composition = self._composition_from_request()
+        if composition is None:
+            return Response(
+                {"detail": "composition must be a JSON object."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if "name" in self.request.data:
+            project.name = self.request.data.get("name") or project.name
+        if "composition" in self.request.data:
+            project.composition = composition
+        export_file = self.request.FILES.get("export_file")
+        if export_file is not None:
+            project.export_file = export_file
+        project.save()
+        return Response(self.get_serializer(project).data)
+
+    def create(self, request, *args, **kwargs):
+        return self._save_project(Project())
+
+    def update(self, request, *args, **kwargs):
+        return self._save_project(self.get_object())
+
+    def partial_update(self, request, *args, **kwargs):
+        return self._save_project(self.get_object())
 
 
 def parse_clip_durations(request, clip_count):
@@ -80,6 +132,12 @@ def parse_clip_durations(request, clip_count):
 
 
 class ComposeJobViewSet(viewsets.ModelViewSet):
+    """Legacy server-side compose queue (kept intact as a fallback).
+
+    Used only by the old server-render path; the client-side export sends
+    no requests here. POST accepts clips+audio and dispatches a Celery task.
+    """
+
     queryset = ComposeJob.objects.all().order_by("-created_at")
     serializer_class = ComposeJobSerializer
     parser_classes = [MultiPartParser, FormParser]

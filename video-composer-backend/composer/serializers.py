@@ -1,5 +1,20 @@
 from rest_framework import serializers
-from .models import ComposeJob, Clip
+from .models import ComposeJob, Clip, Project
+
+
+class ProjectSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Project
+        fields = [
+            "id", "name", "composition", "export_file",
+            "created_at", "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_composition(self, value):
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("composition must be a JSON object.")
+        return value
 
 
 class ClipSerializer(serializers.ModelSerializer):

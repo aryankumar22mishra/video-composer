@@ -10,6 +10,31 @@ def audio_upload_path(instance, filename):
     return f"uploads/{instance.id}/audio/{filename}"
 
 
+def project_export_path(instance, filename):
+    return f"projects/{instance.id}/exports/{filename}"
+
+
+class Project(models.Model):
+    """A saved client-side composition.
+
+    The browser renders and exports the video itself (Canvas/WebCodecs);
+    the backend only persists the editable project (composition JSON) and
+    optionally hosts the exported file for download/sharing. No Celery
+    task, Redis queue, or FFmpeg step is involved in this path — the
+    legacy ComposeJob/Clip pipeline stays intact but unused by it.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=200, default="Untitled project")
+    composition = models.JSONField(default=dict, blank=True)
+    export_file = models.FileField(upload_to=project_export_path, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Project {self.name} ({self.id})"
+
+
 class ComposeJob(models.Model):
     STATUS_CHOICES = [
         ("pending", "Pending"),

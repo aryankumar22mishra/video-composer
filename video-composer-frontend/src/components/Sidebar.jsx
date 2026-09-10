@@ -1,9 +1,9 @@
 // Persistent left navigation — OpenVid-style sidebar.
 //
 // Exposes the three primary actions:
-//   Composer  → returns to / indicates the active composer view
-//   Record    → opens the existing RecordModal (handled by App)
-//   Upload    → triggers the existing file-picker input (handled by App)
+//   Export   → returns to / indicates the active composer (export) view
+//   Record   → opens the existing RecordModal (handled by App)
+//   Upload   → triggers the existing file-picker input (handled by App)
 //
 // This component is pure presentation: all behavior is delegated through
 // props so the existing recording pipeline and upload flow are untouched.
@@ -21,12 +21,13 @@ function SidebarIcon({ name }) {
     'aria-hidden': true,
   }
 
-  if (name === 'composer') {
+  // Download/export arrow: a downward arrow dropping onto a tray line.
+  if (name === 'export') {
     return (
       <svg {...common}>
-        <rect x="3" y="3" width="18" height="18" rx="3" />
-        <path d="M3 8h18" />
-        <path d="M8 3v18" />
+        <path d="M12 4v7" />
+        <path d="M9 7l3 3 3 0 3-3" />
+        <path d="M6 14h12" />
       </svg>
     )
   }
@@ -55,7 +56,7 @@ function SidebarIcon({ name }) {
 
 function Sidebar({ activeSection, onSelectComposer, onSelectRecord, onSelectUpload }) {
   const items = [
-    { key: 'composer', label: 'Composer', icon: 'composer', onClick: onSelectComposer },
+    { key: 'composer', label: 'Export', icon: 'export', onClick: onSelectComposer },
     { key: 'record', label: 'Record', icon: 'record', onClick: onSelectRecord },
     { key: 'upload', label: 'Upload', icon: 'upload', onClick: onSelectUpload },
   ]

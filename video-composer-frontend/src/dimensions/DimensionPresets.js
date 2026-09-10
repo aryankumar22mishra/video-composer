@@ -1,16 +1,17 @@
 // Shared output-dimension constants and helpers for the Dimension Panel.
-//
 // Kept in a plain module (no React component) so the panel file can stay a
 // fast-refresh-friendly single-component export while App.jsx reuses the same
 // presets and the even-number rounding for the job payload + preview sizing.
 
 export const ASPECT_PRESETS = [
-  { id: 'auto', label: 'Auto', badge: 'Native', width: null, height: null },
-  { id: '16:9', label: 'YouTube', badge: '16:9', width: 1920, height: 1080 },
-  { id: '9:16', label: 'TikTok', badge: '9:16', width: 1080, height: 1920 },
-  { id: '1:1', label: 'Instagram', badge: '1:1', width: 1080, height: 1080 },
-  { id: '4:3', label: 'Standard', badge: '4:3', width: 1440, height: 1080 },
-  { id: '3:4', label: 'Portrait', badge: '3:4', width: 1080, height: 1440 },
+  { id: 'auto', label: 'Auto', aspect: 'auto', badge: 'Native', frame: 'auto', description: 'Keep the source aspect ratio', width: null, height: null },
+  { id: 'wide', label: 'Wide', aspect: '16:9', badge: '16:9', frame: 'wide', description: 'YouTube and streaming sites', width: 1920, height: 1080 },
+  { id: 'vertical', label: 'Vertical', aspect: '9:16', badge: '9:16', frame: 'tall', description: 'Instagram Reels and TikTok', width: 1080, height: 1920 },
+  { id: 'square', label: 'Square', aspect: '1:1', badge: '1:1', frame: 'square', description: 'Instagram posts', width: 1080, height: 1080 },
+  { id: 'classic', label: 'Classic', aspect: '4:3', badge: '4:3', frame: 'wide', description: 'Traditional video', width: 1440, height: 1080 },
+  { id: 'social', label: 'Social', aspect: 'custom', badge: '4:5', frame: 'tallish', description: 'Instagram feed', width: 1080, height: 1350 },
+  { id: 'cinema', label: 'Cinema', aspect: 'custom', badge: '21:9', frame: 'ultrawide', description: 'Cinematic and wide video', width: 2560, height: 1080 },
+  { id: 'portrait', label: 'Portrait', aspect: 'custom', badge: '2:3', frame: 'tall', description: 'Portrait photography and content', width: 1080, height: 1620 },
 ]
 
 export const ASPECT_PRESET_BY_ID = Object.fromEntries(

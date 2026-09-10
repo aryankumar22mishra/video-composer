@@ -2,13 +2,15 @@
 import './App.css'
 import { createComposition, createCompositionClip, COMPOSITION_DEFAULTS } from './state/composition'
 import { loadAssetMetadata, resolveVideoDuration, revokeObjectUrlAsset } from './assets/AssetManager'
-import { findActiveClip, drawFrame, seekAndDrawVideo } from './renderer/CompositionRenderer'
+import { findActiveClip, drawFrame, seekAndDrawVideo, drawCompositionFrame } from './renderer/CompositionRenderer'
 import RecordModal from './recorder/RecordModal'
 import useScreenRecorder from './recorder/useScreenRecorder'
 import RecordingControls from './recorder/RecordingControls'
 import RecordingReview from './recorder/RecordingReview'
 import DimensionsPopover from './components/DimensionsPopover'
 import Sidebar from './components/Sidebar'
+import { useClientExport, EXPORT_FORMATS } from './renderer/useClientExport'
+import { createCompositionText } from './state/composition'
 import { toEvenDimension } from './dimensions/DimensionPresets'
 
 const API_BASE = '/api'
@@ -94,7 +96,12 @@ function App() {
   const [imageDuration, setImageDuration] = useState(3)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [job, setJob] = useState(null)
+  // Client-side export replaces the server job queue: running the render
+  // directly in the browser via useClientExport (WebCodecs MP4 fast path
+  // with automatic WebM fallback). Kept names so surrounding UI compiles.
+  const clientExport = useClientExport()
+  const job = null
+  const setJob = () => {}
   const [currentTime, setCurrentTime] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [zoom, setZoom] = useState(80)
@@ -103,6 +110,7 @@ function App() {
   const [selectedClipId, setSelectedClipId] = useState(null)
   const [activeTab, setActiveTab] = useState('videos')
   const [timelineItems, setTimelineItems] = useState([])
+  const [selectedTextId, setSelectedTextId] = useState(null)
   const [composition, setComposition] = useState(createComposition())
   const [clipDurations, setClipDurations] = useState([])
   const [previewImages, setPreviewImages] = useState({})
@@ -218,8 +226,72 @@ function App() {
     (sum, clip) => sum + clip.duration,
     0
   )
-  const estimatedDuration = Math.max(compositionVideoDuration, audioFile ? 12 : 0)
+  const [audioUrl, setAudioUrl] = useState(null)
+  const [audioDuration, setAudioDuration] = useState(0)
+  const audioRef = useRef(null)
+
+  // Object URL for the uploaded audio so the preview can play it; revoked
+  // (and the measured duration reset) whenever the audio file changes.
+  useEffect(() => {
+    if (!audioFile) {
+      setAudioUrl(null)
+      setAudioDuration(0)
+      return undefined
+    }
+    const url = URL.createObjectURL(audioFile)
+    setAudioUrl(url)
+
+    // Measure the audio's real duration once the metadata loads so the
+    // timeline AUDIO block (and the shared-clock estimated duration) use
+    // the actual length instead of the 12s fallback.
+    const audio = new Audio()
+    audio.preload = 'metadata'
+    audio.onloadedmetadata = () => {
+      if (Number.isFinite(audio.duration)) {
+        setAudioDuration(audio.duration)
+      }
+    }
+    audio.src = url
+
+    return () => {
+      audio.pause()
+      audio.removeAttribute('src')
+      URL.revokeObjectURL(url)
+      setAudioUrl(null)
+    }
+  }, [audioFile])
+
+  const estimatedDuration = Math.max(
+    compositionVideoDuration,
+    audioFile ? (audioDuration || 12) : 0
+  )
   const totalDuration = duration || estimatedDuration
+
+  // Play/pause the preview audio with the timeline transport. The .play()
+  // promise is guarded: browsers refuse autoplay until user interaction,
+  // and the preview audio element may not exist yet (audio not uploaded).
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    if (isPlaying) {
+      audio.play().catch(() => {})
+    } else {
+      audio.pause()
+    }
+  }, [isPlaying])
+
+  // Keep the audio aligned with the shared timeline clock while playing:
+  // correct only on real drift (> 0.3s) and only while the audio still has
+  // content left — after it ends the video preview keeps playing silently.
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio || !isPlaying || audio.ended) return
+    if (audioDuration && currentTime > audioDuration) return
+    if (Math.abs(audio.currentTime - currentTime) > 0.3) {
+      audio.currentTime = currentTime
+    }
+  }, [currentTime, isPlaying, audioDuration])
+
   const progress = totalDuration ? (currentTime / totalDuration) * 100 : 0
   const timelineWidth = Math.max(560, totalDuration * zoom + 30)
   const rulerMarks = generateRulerMarks(totalDuration, zoom)
@@ -296,7 +368,10 @@ function App() {
     if (preset.id === 'auto') {
       applyDimensions('auto', COMPOSITION_DEFAULTS.width, COMPOSITION_DEFAULTS.height)
     } else {
-      applyDimensions(preset.id, preset.width, preset.height)
+      // `aspect` carries the backend-valid ratio; presets Django doesn't
+      // support natively (4:5, 21:9, 2:3) are sent as 'custom' with their
+      // explicit width/height still defining the output resolution.
+      applyDimensions(preset.aspect ?? preset.id, preset.width, preset.height)
     }
     setIsDimensionsOpen(false)
   }
@@ -424,34 +499,59 @@ function App() {
     }
   }, [clips])
 
-  // Draw the active clip (image or video frame) onto the canvas whenever
-  // the playhead time or composition changes
+  // Draw the active clip (image or video frame) + any text overlays onto the
+  // canvas whenever the playhead time or composition changes. Uses the SHARED
+  // drawCompositionFrame path so the live preview and the client-side exporter
+  // produce pixel-identical output. During scrubbing (paused) video clips are
+  // seeked to the exact frame first; during playback the clip-audio effect
+  // advances the active video so we draw its current frame without seeking.
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
     const ctx = canvas.getContext('2d')
 
-    const activeClip = findActiveClip(composition, currentTime)
-    if (!activeClip) {
-      drawFrame(ctx, canvas, null)
-      return
-    }
-
-    const file = clips[activeClip.fileIndex]
-    const timeWithinClip = currentTime - activeClip.startTime
-
-    if (file?.type.startsWith('image/')) {
-      const image = previewImages[activeClip.fileIndex]
-      drawFrame(ctx, canvas, image, activeClip.transform)
-    } else if (file?.type.startsWith('video/')) {
-      const video = previewVideos[activeClip.fileIndex]
-      if (video) {
-        const speed = activeClip.speed || 1
-        const sourceTime = timeWithinClip * speed
-        seekAndDrawVideo(video, ctx, canvas, sourceTime, activeClip.transform)
+    // Scrubbing: seek video clips to the exact frame for a sharp static
+    // preview. During playback the clip-audio sync effect drives the video.
+    if (!isPlaying) {
+      const scrubClip = findActiveClip(composition, currentTime)
+      if (scrubClip?.fileType?.startsWith('video/')) {
+        const video = previewVideos[scrubClip.fileIndex]
+        if (video) {
+          const speed = scrubClip.speed || 1
+          const sourceTime = (currentTime - scrubClip.startTime) * speed
+          if (Math.abs(video.currentTime - sourceTime) > 0.05) {
+            video.currentTime = sourceTime
+          }
+        }
       }
     }
-  }, [currentTime, composition, previewImages, previewVideos, clips, previewWidth, previewHeight])
+
+    drawCompositionFrame(ctx, canvas, composition, currentTime, {
+      images: previewImages,
+      videos: previewVideos,
+    })
+  }, [currentTime, composition, previewImages, previewVideos, clips, previewWidth, previewHeight, isPlaying])
+
+  // Drive the active clip hidden video element so its audio plays in sync
+  // with the shared timeline clock. During playback only the active clip is
+  // unmuted and playing (all others are muted+paused); scrubbing mutes
+  // everything. This is the preview soundtrack - recorded system audio and
+  // mic from screen recordings, or the audio track of any video clip.
+  useEffect(() => {
+    const activeClip = findActiveClip(composition, currentTime)
+    Object.keys(hiddenVideoRefs.current).forEach((index) => {
+      const video = hiddenVideoRefs.current[index]
+      if (!video) return
+      const isActive = activeClip && Number(activeClip.fileIndex) === Number(index)
+      if (isActive && isPlaying) {
+        const speed = activeClip.speed || 1
+        const sourceTime = (currentTime - activeClip.startTime) * speed
+        video.muted = false
+        if (Math.abs(video.currentTime - sourceTime) > 0.3) { video.currentTime = sourceTime }
+        video.play().catch(() => {})
+      } else { video.muted = true; video.pause() }
+    })
+  }, [currentTime, isPlaying, composition])
 
   // Playback loop: advances currentTime in real time while isPlaying is true
   useEffect(() => {
@@ -485,66 +585,53 @@ function App() {
     setDuration(0)
   }, [timelineItems])
 
-  const startComposition = async () => {
+  // Client-side export (replaces the server compose queue): render the
+  // composition timeline directly in the browser. MP4 is the primary fast
+  // path (WebCodecs + mp4-muxer); the hook falls back to WebM automatically.
+  const startClientExport = async (format = EXPORT_FORMATS.MP4) => {
     if (!timelineItems.length) {
       setError('Please add at least one clip to the timeline.')
+      return null
+    }
+    setError('')
+    return await clientExport.start({
+      composition,
+      clips,
+      audioFile,
+      mediaImages: { ...previewImages },
+      format,
+    })
+  }
+
+  const startComposition = async () => startClientExport(EXPORT_FORMATS.MP4)
+
+  // Force-download a client-rendered result with a given filename.
+  const triggerFileDownload = (url, filename) => {
+    if (!url) return
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    link.style.display = 'none'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+
+  // "Download WebM" / "Download MP4": if the last export is already that
+  // format, download it immediately; otherwise render the other format
+  // first, then download THAT result.
+  const handleDownloadFormat = async (format) => {
+    if (clientExport.exporting) return
+    const wantMp4 = format === EXPORT_FORMATS.MP4
+    const currentIsMp4 = outputMimeType.includes('mp4')
+    const filename = wantMp4 ? 'composition.mp4' : 'composition.webm'
+    if (currentIsMp4 === wantMp4 && clientExport.result?.url) {
+      triggerFileDownload(clientExport.result.url, filename)
       return
     }
-
-    setLoading(true)
-    setError('')
-    const formData = new FormData()
-    timelineItems.forEach((item) => {
-      const file = clips[item.clipIndex]
-      if (file) formData.append('clips', file)
-    })
-    if (audioFile) formData.append('audio', audioFile)
-    formData.append('image_duration', String(imageDuration))
-
-    // Per-clip durations (timeline order) so the backend renders every clip
-    // at its real length. Without this the backend falls back to the 3s
-    // image_duration default and squeezes long recordings down. Durations
-    // come from the composition itself, so speed changes are honored too.
-    const durationByUid = new Map(
-      composition.tracks[0].clips.map((clip) => [clip.id, clip.duration])
-    )
-    const durationsPayload = timelineItems.map((item) => {
-      const duration = durationByUid.get(item.uid) ?? imageDuration
-      return Number(Math.max(duration, 0.1).toFixed(3))
-    })
-    formData.append('clip_durations', JSON.stringify(durationsPayload))
-    console.debug('[Submit] clip_durations=', durationsPayload)
-
-    // Output dimensions come straight from the composition (single source
-    // of truth) so the exported file matches the live preview exactly.
-    // Custom/preset dims are already even (H.264 requirement); "auto"
-    // omits width/height so the backend uses its 1280x720 base box, which
-    // equals the composition's default size.
-    if (aspectRatioMode !== 'auto') {
-      formData.append('width', String(composition.width))
-      formData.append('height', String(composition.height))
-    }
-    formData.append('aspect_ratio', aspectRatioMode)
-    formData.append('fit_mode', 'pad')
-    console.debug('[Submit] dimensions=', {
-      width: aspectRatioMode === 'auto' ? null : composition.width,
-      height: aspectRatioMode === 'auto' ? null : composition.height,
-      aspect_ratio: aspectRatioMode,
-      fit_mode: 'pad',
-    })
-
-    try {
-      const response = await fetch(`${API_BASE}/jobs/`, {
-        method: 'POST',
-        body: formData,
-      })
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.detail || 'The compose request could not be started.')
-      setJob(data)
-    } catch (submitError) {
-      setError(submitError.message)
-    } finally {
-      setLoading(false)
+    const result = await startClientExport(format)
+    if (result?.url) {
+      triggerFileDownload(result.url, filename)
     }
   }
 
@@ -560,6 +647,13 @@ function App() {
     setCurrentTime(boundedTime)
     if (videoRef.current && Number.isFinite(videoRef.current.duration)) {
       videoRef.current.currentTime = boundedTime
+    }
+    // Seek the preview audio too so scrubbing the playhead keeps the
+    // audio aligned; clamped to the audio's length (scrubbing past the
+    // audio's end leaves it at its end — the video keeps playing).
+    const audio = audioRef.current
+    if (audio && Number.isFinite(audio.duration)) {
+      audio.currentTime = Math.min(boundedTime, audio.duration)
     }
   }
 
@@ -656,7 +750,14 @@ function App() {
   }
 
   const handleTogglePlayback = () => {
-    setIsPlaying((prev) => !prev)
+    const willPlay = !isPlaying
+    // At the end of the timeline the loop had already stopped with
+    // currentTime === totalDuration; starting from there would stop again
+    // on the very first tick. Replay from the beginning instead.
+    if (willPlay && totalDuration > 0 && currentTime >= totalDuration) {
+      seekTo(0)
+    }
+    setIsPlaying(willPlay)
   }
 
   const skipBackward = () => {
@@ -706,14 +807,14 @@ function App() {
     } catch {
       // Fall through to the last resort below.
     }
-    console.warn('[Duration] Could not determine video length, using image duration:', file.name)
+    console.log('[Duration] Could not determine video length, using image duration:', file.name)
     return imageDuration
   }
 
   const addToTimeline = async (clipIndex) => {
     const file = clips[clipIndex]
     const clipDuration = await resolveClipDuration(file, clipIndex)
-    console.debug('[Timeline] added clip duration =', clipDuration, file?.name)
+    console.log('[Timeline] added clip duration =', clipDuration, file?.name)
     const uid = `${clipIndex}-${Date.now()}-${Math.random()}`
     setTimelineItems((prev) => [...prev, { clipIndex, uid }])
     setComposition((prev) => {
@@ -769,15 +870,14 @@ function App() {
     if (isRecorderSetupOpen) {
       setIsRecorderSetupOpen(false)
     }
-    // Trigger the compose action directly. The upload form is only mounted
-    // while the Upload tab is active, so submitting the DOM form would
-    // silently no-op from every other tab - call the handler instead.
+    // The left-sidebar "Export" button triggers the client-side export
+    // directly (works from any tab). With an empty timeline it just warns.
     if (!loading && timelineItems.length) {
       startComposition()
       return
     }
     if (!timelineItems.length) {
-      setError('Add at least one clip to the timeline before composing.')
+      setError('Add at least one clip to the timeline before exporting.')
     }
   }
 
@@ -902,19 +1002,44 @@ function App() {
     dragIndexRef.current = null
   }
 
-  const handleDeleteJob = async () => {
-    if (!job) return
-    try {
-      await fetch(`${API_BASE}/jobs/${job.id}/`, { method: 'DELETE' })
-      setJob(null)
-      setCurrentTime(0)
-    } catch {
-      setError('Could not delete the job.')
-    }
+  // Text overlay controls: add a caption bound to the current playhead
+  // position (3s, centered) and remove the selected one. Both flow through
+  // the composition model so preview, timeline, and export stay in sync.
+  const handleAddText = () => {
+    const text = createCompositionText({ startTime: currentTime, duration: 3 })
+    setComposition((prev) => ({ ...prev, texts: [...(prev.texts || []), text] }))
+    setSelectedTextId(text.id)
+    setError('')
   }
 
-  const outputVideoUrl = job?.output_video
-  const statusClass = job ? `status status-${job.status}` : 'status status-idle'
+  const handleRemoveText = (id) => {
+    setComposition((prev) => ({ ...prev, texts: (prev.texts || []).filter((t) => t.id !== id) }))
+    if (selectedTextId === id) setSelectedTextId(null)
+  }
+
+  const handleDeleteJob = async () => {
+    // Client-side exports live in browser memory (object URLs), not on a
+    // server job queue — "delete" just discards the current result.
+    clientExport.reset()
+    setCurrentTime(0)
+  }
+
+  const outputVideoUrl = clientExport.result?.url || null
+  const outputMimeType = clientExport.result?.mimeType || ''
+  const statusClass = clientExport.status === 'done'
+    ? 'status status-completed'
+    : clientExport.status === 'working'
+      ? 'status status-processing'
+      : clientExport.status === 'error'
+        ? 'status status-failed'
+        : 'status status-idle'
+  const statusLabel = clientExport.status === 'done'
+    ? 'ready'
+    : clientExport.status === 'working'
+      ? 'rendering'
+      : clientExport.status === 'error'
+        ? 'failed'
+        : clientExport.status === 'cancelled' ? 'cancelled' : 'idle'
   const selectedClip = composition.tracks[0].clips.find((c) => c.id === selectedClipId)
   const durationByUid = new Map(
     composition.tracks[0].clips.map((clip) => [clip.id, clip.duration])
@@ -1077,12 +1202,12 @@ function App() {
 
       <section className="simple-card result-card">
         <div className="result-heading compact">
-          <p><strong>Job ID:</strong> {job?.id ? `${job.id.slice(0, 8)}...` : '—'}</p>
+          <p><strong>Export:</strong> {outputMimeType ? outputMimeType.split(';')[0] : 'browser render'}</p>
           <div className="result-heading-actions">
-            <span className={statusClass}>{job?.status || 'idle'}</span>
-            {job && (
+            <span className={statusClass}>{statusLabel}</span>
+            {(clientExport.result || clientExport.status === 'error') && (
               <button type="button" className="delete-job" onClick={handleDeleteJob}>
-                Delete
+                Clear
               </button>
             )}
           </div>
@@ -1100,18 +1225,58 @@ function App() {
           />
         </div>
 
-        {job?.error_message && <p className="message error">{job.error_message}</p>}
+        {/* Synced preview audio: plays the uploaded audio with the shared
+            timeline clock. Effects below keep it aligned with currentTime
+            (play/pause, drift-correct, seek). After the audio ends the
+            video preview keeps playing in silence. */}
+        {audioUrl && (
+          <audio
+            ref={audioRef}
+            src={audioUrl}
+            preload="auto"
+            hidden
+          />
+        )}
 
-        {job?.status === 'completed' && outputVideoUrl && (
-          <a
-            className="primary-button download-link"
-            href={outputVideoUrl}
-            download
-            target="_blank"
-            rel="noreferrer"
-          >
-            ⬇ Download video
-          </a>
+        {clientExport.error && <p className="message error">{clientExport.error}</p>}
+
+        {clientExport.exporting && (
+          <div className="export-progress" role="status" aria-live="polite">
+            <div className="export-progress-bar">
+              <div
+                className="export-progress-fill"
+                style={{ width: `${Math.round((clientExport.progress || 0) * 100)}%` }}
+              />
+            </div>
+            <p className="export-progress-message">{clientExport.message}</p>
+            <button type="button" className="delete-job" onClick={clientExport.cancel}>
+              Cancel export
+            </button>
+          </div>
+        )}
+
+        {clientExport.status === 'done' && outputVideoUrl && (
+          <>
+            <p className="message success">Export ready — choose a format to download.</p>
+            <div className="export-actions">
+              <button
+                type="button"
+                className="primary-button download-link"
+                disabled={clientExport.exporting}
+                onClick={() => handleDownloadFormat(EXPORT_FORMATS.WEBM)}
+              >
+                ⬇ Download WebM
+              </button>
+              <button
+                type="button"
+                className="primary-button download-link"
+                disabled={clientExport.exporting}
+                onClick={() => handleDownloadFormat(EXPORT_FORMATS.MP4)}
+              >
+                ⬇ Download MP4
+              </button>
+            </div>
+          </>
         )}
 
         {job?.status === 'completed' && !outputVideoUrl && (
