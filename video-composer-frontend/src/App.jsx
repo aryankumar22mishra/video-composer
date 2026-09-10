@@ -660,7 +660,9 @@ function App() {
   const handleTimelineClick = (event) => {
     const bounds = event.currentTarget.getBoundingClientRect()
     const time = ((event.clientX - bounds.left) / bounds.width) * totalDuration
-    seekTo(time)
+    // Snap to the nearest whole second so a click on a tick lands exactly on it.
+    // The geometry math yields a float (e.g. 8.5) which should round to 8.
+    seekTo(Math.round(time))
     // If this click is the pointerup that ended a drag, suppress the click seek
     // (the drag already moved the playhead). Reset the flag so the next click
     // seeks normally.
@@ -677,7 +679,8 @@ function App() {
   const seekFromEvent = (event, target) => {
     const bounds = target.getBoundingClientRect()
     const time = ((event.clientX - bounds.left) / bounds.width) * totalDuration
-    seekTo(time)
+    // Snap to the nearest whole second so a click/drag lands on a tick.
+    seekTo(Math.round(time))
     if (!isDraggingPlayheadRef.current) {
       // First pointer move during a potential drag — mark that a drag started
       // so the following pointerup/click does not seek again.
