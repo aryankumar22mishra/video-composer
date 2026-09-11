@@ -67,6 +67,7 @@ function RecordModal({ recorder, onClose }) {
     cameraDeviceId, setCameraDeviceId,
     cameraShape, setCameraShape,
     cameraSize, setCameraSize,
+    cameraZoom, setCameraZoom,
     cameraMirror, setCameraMirror,
     cameraPosition, setCameraPosition,
     micEnabled, setMicEnabled,
@@ -156,7 +157,8 @@ function RecordModal({ recorder, onClose }) {
     aspectRatio: '1 / 1',
     borderRadius: SHAPE_RADIUS[cameraShape] ?? '50%',
     ...(BUBBLE_POSITION_STYLE[cameraPosition] ?? BUBBLE_POSITION_STYLE['bottom-right']),
-    transform: cameraMirror ? 'scaleX(-1)' : undefined,
+    transformOrigin: 'center center',
+    transform: `scale(${cameraZoom}) ${cameraMirror ? 'scaleX(-1)' : ''}`.trim(),
   }
 
   // State-driven primary footer action (single button that morphs).
@@ -377,6 +379,23 @@ function RecordModal({ recorder, onClose }) {
                     aria-label="Webcam size"
                   />
                   <output className="record-size-value">{sizePercent}%</output>
+                </div>
+
+                <div className="record-slider-group">
+                  <div className="record-field-header">
+                    <span className="record-field-label">Zoom</span>
+                    <output className="record-size-value">{cameraZoom.toFixed(1)}x</output>
+                  </div>
+                  <input
+                    type="range"
+                    min="1"
+                    max="2.5"
+                    step="0.1"
+                    value={cameraZoom}
+                    onChange={(event) => setCameraZoom(Number(event.target.value))}
+                    disabled={!cameraEnabled}
+                    aria-label="Webcam zoom"
+                  />
                 </div>
 
                 <div className="record-toggle-row">

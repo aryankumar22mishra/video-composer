@@ -50,7 +50,7 @@ function drawWebcamOverlay(frame) {
     return
   }
 
-  const { shape, size, mirror, position } = settings
+  const { shape, size, zoom, mirror, position } = settings
 
   const sourceWidth = frame.displayWidth
   const sourceHeight = frame.displayHeight
@@ -63,6 +63,9 @@ function drawWebcamOverlay(frame) {
     canvas.width *
       (WEBCAM_SIZE_RATIO[size] || WEBCAM_SIZE_RATIO.medium),
   )
+
+  const zoomFactor = Math.max(1, Number(zoom) || 1)
+  const renderSide = side * zoomFactor
 
   const margin = Math.max(
     12,
@@ -153,10 +156,10 @@ function drawWebcamOverlay(frame) {
     sy,
     cropSize,
     cropSize,
-    -side / 2,
-    -side / 2,
-    side,
-    side,
+    -renderSide / 2,
+    -renderSide / 2,
+    renderSide,
+    renderSide,
   )
 
   ctx.restore()

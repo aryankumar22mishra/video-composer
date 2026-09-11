@@ -34,6 +34,7 @@ const INITIAL_STATE = {
   cameraDeviceId: '',
   cameraShape: 'circle',
   cameraSize: 'medium',
+  cameraZoom: 1,
   cameraMirror: true,
   cameraPosition: 'bottom-right',
   micEnabled: true,
@@ -200,6 +201,10 @@ export function useScreenRecorder({ onCommit } = {}) {
     INITIAL_STATE.cameraSize,
   )
 
+  const [cameraZoom, setCameraZoom] = useState(
+    INITIAL_STATE.cameraZoom,
+  )
+
   const [cameraMirror, setCameraMirror] = useState(
     INITIAL_STATE.cameraMirror,
   )
@@ -285,6 +290,7 @@ export function useScreenRecorder({ onCommit } = {}) {
   const cameraSettingsRef = useRef({
     shape: INITIAL_STATE.cameraShape,
     size: INITIAL_STATE.cameraSize,
+    zoom: INITIAL_STATE.cameraZoom,
     mirror: INITIAL_STATE.cameraMirror,
     position: INITIAL_STATE.cameraPosition,
   })
@@ -397,12 +403,14 @@ export function useScreenRecorder({ onCommit } = {}) {
     cameraSettingsRef.current = {
       shape: cameraShape,
       size: cameraSize,
+      zoom: cameraZoom,
       mirror: cameraMirror,
       position: cameraPosition,
     }
   }, [
     cameraShape,
     cameraSize,
+    cameraZoom,
     cameraMirror,
     cameraPosition,
   ])
@@ -2383,6 +2391,9 @@ export function useScreenRecorder({ onCommit } = {}) {
 
     cameraSize,
     setCameraSize,
+
+    cameraZoom,
+    setCameraZoom,
 
     cameraMirror,
     setCameraMirror,

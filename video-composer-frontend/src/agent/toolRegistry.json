@@ -1,0 +1,579 @@
+[
+  {
+    "name": "trim_clip",
+    "description": "Shorten a clip to duration seconds from its current source start.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "clip_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "duration": {
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 1800
+        }
+      },
+      "required": [
+        "clip_id",
+        "duration"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "split_clip",
+    "description": "Split inside a clip. Result returns the two new clip IDs; use those in a later planning round.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "clip_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "at_seconds": {
+          "type": "number",
+          "minimum": 0.001,
+          "maximum": 1800
+        }
+      },
+      "required": [
+        "clip_id",
+        "at_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "reorder_clips",
+    "description": "Reorder every timeline video clip exactly once.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "clip_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "minItems": 1,
+          "maxItems": 1000,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "clip_ids"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "update_text",
+    "description": "Change an existing text overlay.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "text_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        }
+      },
+      "required": [
+        "text_id",
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "add_text",
+    "description": "Add a text overlay. Result returns the actual text ID.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "start_time": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1800
+        },
+        "duration": {
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 1800
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "set_speed",
+    "description": "Change playback speed while preserving the available source interval.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "clip_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "speed": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 8
+        }
+      },
+      "required": [
+        "clip_id",
+        "speed"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "set_volume",
+    "description": "Set clip audio volume, 0 is mute and 1 is full.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "clip_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "volume": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      },
+      "required": [
+        "clip_id",
+        "volume"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "set_dimensions",
+    "description": "Set even output dimensions within browser export limits.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3840,
+          "multipleOf": 2
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3840,
+          "multipleOf": 2
+        }
+      },
+      "required": [
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "set_grayscale",
+    "description": "Enable or disable grayscale for a clip.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "clip_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "clip_id",
+        "enabled"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "keep_clip_range",
+    "description": "Keep only a playback interval relative to the current clip start.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "clip_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1800
+        },
+        "end_seconds": {
+          "type": "number",
+          "minimum": 0.001,
+          "maximum": 1800
+        }
+      },
+      "required": [
+        "clip_id",
+        "start_seconds",
+        "end_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "remove_clip_range",
+    "description": "Remove a playback interval relative to the current clip start.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "clip_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1800
+        },
+        "end_seconds": {
+          "type": "number",
+          "minimum": 0.001,
+          "maximum": 1800
+        }
+      },
+      "required": [
+        "clip_id",
+        "start_seconds",
+        "end_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser"
+  },
+  {
+    "name": "open_recording_setup",
+    "description": "Open recording setup. Browser permissions are still required.",
+    "arguments": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "executor": "ui",
+    "availability": "browser"
+  },
+  {
+    "name": "stop_recording",
+    "description": "Stop an active recording. This does not add it to the timeline.",
+    "arguments": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "executor": "ui",
+    "availability": "recording"
+  },
+  {
+    "name": "open_media_upload",
+    "description": "Open the Upload panel. User must choose files; this does not upload any files.",
+    "arguments": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    },
+    "executor": "ui",
+    "availability": "browser"
+  },
+  {
+    "name": "plan_scenes",
+    "description": "Propose a scene plan for a creation goal and obtain user approval before assembling or generating. Use the accumulated brief. Ask only for missing subject, audience or key message; default duration to 30 seconds and format to the current canvas. Use uploaded assets when suitable.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "scenes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "properties": {
+              "description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000
+              },
+              "duration": {
+                "type": "number",
+                "minimum": 0.25,
+                "maximum": 120
+              },
+              "asset_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              }
+            },
+            "required": [
+              "description",
+              "duration"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "title",
+        "scenes"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "scenes",
+    "availability": "browser"
+  },
+  {
+    "name": "append_asset",
+    "description": "Append an existing or preview-approved image/video asset to the editable timeline. Returns actual clip_id.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "duration": {
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 1800
+        }
+      },
+      "required": [
+        "asset_id",
+        "duration"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "append",
+    "availability": "browser"
+  },
+  {
+    "name": "set_background_audio",
+    "description": "Use a preview-approved or uploaded audio asset as the single background audio track, replacing the previous background.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "asset_id"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "audio",
+    "availability": "browser"
+  },
+  {
+    "name": "transcribe",
+    "description": "Transcribe an audio/video asset using a configured transcription service. Requires approval to send the selected media. Returns text, not a media file.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "language": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        }
+      },
+      "required": [
+        "asset_id"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "service",
+    "availability": "service",
+    "service": "TRANSCRIPTION",
+    "chargeable": true,
+    "alternative": "Upload an existing transcript as text in chat, or type captions with add_text."
+  },
+  {
+    "name": "text_to_speech",
+    "description": "Synthesize narration using a configured speech service. Returns an audio asset for preview before use.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "voice": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        }
+      },
+      "required": [
+        "text",
+        "voice"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "service",
+    "availability": "service",
+    "service": "TTS",
+    "chargeable": true,
+    "alternative": "Upload a prerecorded narration file using My media > Upload."
+  },
+  {
+    "name": "generate_image",
+    "description": "Generate image using a separately configured service. Requires charge confirmation and preview approval; never claim the text model creates media.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3840,
+          "multipleOf": 2
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3840,
+          "multipleOf": 2
+        }
+      },
+      "required": [
+        "prompt",
+        "width",
+        "height"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "service",
+    "availability": "service",
+    "service": "IMAGE_GENERATION",
+    "chargeable": true,
+    "alternative": "Use uploaded images/videos or record your screen; append_asset can assemble them."
+  },
+  {
+    "name": "generate_video",
+    "description": "Generate video using a separately configured service. Requires charge confirmation and preview approval; never claim the text model creates media.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 5000
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3840,
+          "multipleOf": 2
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 3840,
+          "multipleOf": 2
+        },
+        "duration": {
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 30
+        }
+      },
+      "required": [
+        "prompt",
+        "width",
+        "height",
+        "duration"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "service",
+    "availability": "service",
+    "service": "VIDEO_GENERATION",
+    "chargeable": true,
+    "alternative": "Use uploaded images/videos or record your screen; append_asset can assemble them."
+  }
+]

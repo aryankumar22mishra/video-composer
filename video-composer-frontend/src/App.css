@@ -487,6 +487,38 @@ h2 {
 .video-block { background: repeating-linear-gradient(90deg, #6d28d9, #6d28d9 2px, #7c3aed 2px, #7c3aed 40px); border-color: #a78bfa; }
 .audio-block { background: repeating-linear-gradient(90deg, #78350f, #78350f 2px, #92400e 2px, #92400e 40px); border-color: #d97706; }
 
+.zoom-track-content {
+  position: relative;
+  min-height: 70px;
+  align-items: center;
+}
+
+.zoom-block {
+  justify-content: center;
+  border-color: #60a5fa;
+  background: linear-gradient(135deg, #2563eb, #3b82f6);
+  text-align: left;
+  cursor: pointer;
+}
+
+.zoom-block small {
+  color: #dbeafe;
+}
+
+.timeline-zoom-chip {
+  align-self: flex-start;
+  margin-top: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: #fff;
+  background: #2563eb;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  line-height: 1;
+}
+
 .timeline-playhead { position: absolute; top: 0; bottom: 0; left: 0; z-index: 2; width: 2px; background: #7c3aed; box-shadow: 0 0 10px rgba(124, 58, 237, 0.8); pointer-events: none; }
 .timeline-playhead-handle {
   position: absolute;
@@ -4357,6 +4389,98 @@ h2 {
   min-height: 0;
 }
 
+.zoom-summary-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid #e3e3ed;
+  border-radius: 14px;
+  padding: 14px 12px;
+  background: linear-gradient(135deg, #ffffff 0%, #f7f7ff 100%);
+  box-shadow: 0 8px 18px rgba(64, 77, 122, 0.08);
+}
+
+.zoom-summary-card-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: #2f6bff;
+  background: #edf3ff;
+}
+
+.zoom-summary-card-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.zoom-summary-card-kicker {
+  margin-bottom: 2px;
+  color: #69708d;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.zoom-summary-card-copy strong {
+  color: #1f2433;
+  font-size: 0.95rem;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zoom-summary-card-copy small {
+  color: #69708d;
+  font-size: 0.78rem;
+}
+
+.zoom-summary-card-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 52px;
+  color: #1f2433;
+  font-weight: 800;
+}
+
+.zoom-summary-card-meta b {
+  font-size: 0.9rem;
+}
+
+.zoom-summary-card-meta span {
+  color: #69708d;
+  font-size: 0.72rem;
+}
+
+.zoom-summary-card-button {
+  grid-column: 1 / -1;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #fff;
+  background: linear-gradient(135deg, #2563eb 0%, #2f6bff 100%);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.zoom-summary-card-button:hover {
+  filter: brightness(0.98);
+}
+
+.zoom-summary-card-button:disabled {
+  opacity: 0.65;
+  cursor: default;
+  filter: none;
+}
+
 .zoom-header {
   display: flex;
   flex: 0 0 auto;
@@ -4383,6 +4507,13 @@ h2 {
 
 .zoom-back:hover {
   background: #f2f2f9;
+}
+
+.zoom-header-spacer {
+  display: block;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
 }
 
 .zoom-title {
@@ -4670,3 +4801,15 @@ h2 {
   letter-spacing: 0.01em;
   pointer-events: none;
 }
+.ai-review, .ai-run-progress {
+  margin: 10px 0;
+  padding: 12px;
+  border: 1px solid #596179;
+  border-radius: 10px;
+  max-height: 420px;
+  overflow: auto;
+}
+.ai-review img, .ai-review video, .ai-review audio { width: 100%; max-height: 260px; object-fit: contain; }
+.ai-review pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.ai-review li, .ai-run-progress li { margin-bottom: 6px; }
+.ai-review button, .ai-run-progress button { padding: 8px 12px; cursor: pointer; }

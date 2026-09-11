@@ -132,8 +132,9 @@ export function drawCompositionFrame(ctx, canvas, composition, time, mediaSource
   // Zoom Fragment effect for the active clip (applies on top of the clip's
   // own transform and grayscale). Bound by clipId so only the clip the user
   // attached the fragment to is affected.
-  const zoomFragment = composition.zoomFragment
-  const zoom = zoomFragment && activeClip && zoomFragment.clipId === activeClip.id
+  const zoomFragment = (composition.zoomFragments || []).find((fragment) => time >= fragment.startTime && time <= fragment.endTime)
+    || composition.zoomFragment
+  const zoom = zoomFragment && activeClip
     ? zoomEffectsForTime(zoomFragment, activeClip.startTime, activeClip.duration, time)
     : null
 

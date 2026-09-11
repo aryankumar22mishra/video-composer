@@ -135,7 +135,7 @@ class ExtractJsonTests(TestCase):
         with self.assertRaises(ValueError):
             ai_agent._extract_json("```json\n{\"actions\":[]}")
 
-        def test_unterminated_code_block_raises(self):
+    def test_unterminated_code_block_raises(self):
         with self.assertRaises(ValueError):
             ai_agent._extract_json("```\n{\"actions\":[]}")
 
@@ -183,7 +183,7 @@ class EnabledToolsTests(TestCase):
             tools = ai_agent._enabled_tools()
             self.assertEqual(tools, ai_agent.SUPPORTED_TOOLS | {"open_recording_setup"})
 
-        def test_empty_extra_tools(self):
+    def test_empty_extra_tools(self):
         with mock.patch.dict(os.environ, {"AI_EXTRA_TOOLS": ""}, clear=True):
             tools = ai_agent._enabled_tools()
             self.assertEqual(tools, ai_agent.SUPPORTED_TOOLS)
@@ -290,7 +290,7 @@ class ValidateAgentResponseTests(TestCase):
         with self.assertRaises(ValueError):
             ai_agent.validate_agent_response(payload, enabled_tools=self.enabled_tools)
 
-        def test_text_content_non_string_rejected(self):
+    def test_text_content_non_string_rejected(self):
         payload = {"actions": [{"type": "add_text", "content": 123}], "summary": "x"}
         with self.assertRaises(ValueError):
             ai_agent.validate_agent_response(payload, enabled_tools=self.enabled_tools)
@@ -349,7 +349,7 @@ class ValidateAgentResponseTests(TestCase):
         with self.assertRaises(ValueError):
             ai_agent.validate_agent_response(payload, enabled_tools=self.enabled_tools)
 
-        def test_set_volume_negative_rejected(self):
+    def test_set_volume_negative_rejected(self):
         payload = {"actions": [{"type": "set_volume", "clip_id": "c1", "volume": -0.1}], "summary": "x"}
         with self.assertRaises(ValueError):
             ai_agent.validate_agent_response(payload, enabled_tools=self.enabled_tools)
@@ -370,7 +370,7 @@ class ValidateAgentResponseTests(TestCase):
         with self.assertRaises(ValueError):
             ai_agent.validate_agent_response(payload, enabled_tools=self.enabled_tools)
 
-        def test_set_dimensions_too_large_rejected(self):
+    def test_set_dimensions_too_large_rejected(self):
         payload = {"actions": [{"type": "set_dimensions", "width": 4000, "height": 1080}], "summary": "x"}
         with self.assertRaises(ValueError):
             ai_agent.validate_agent_response(payload, enabled_tools=self.enabled_tools)
@@ -399,7 +399,7 @@ class ValidateAgentResponseTests(TestCase):
         with self.assertRaises(ValueError):
             ai_agent.validate_agent_response(payload, enabled_tools=self.enabled_tools)
 
-        def test_range_end_equals_start_rejected(self):
+    def test_range_end_equals_start_rejected(self):
         payload = {"actions": [{"type": "keep_clip_range", "clip_id": "c1", "start_seconds": 3, "end_seconds": 3}], "summary": "x"}
         with self.assertRaises(ValueError):
             ai_agent.validate_agent_response(payload, enabled_tools=self.enabled_tools)
@@ -470,7 +470,7 @@ class ValidateAgentResponseTests(TestCase):
         with self.assertRaises(ValueError):
             ai_agent.validate_agent_response(payload, enabled_tools=self.enabled_tools)
 
-        def test_action_with_extra_field_rejected(self):
+    def test_action_with_extra_field_rejected(self):
         payload = {"actions": [{"type": "trim_clip", "clip_id": "c1", "duration": 5}], "summary": "x", "extra": "no"}
         with self.assertRaises(ValueError):
             ai_agent.validate_agent_response(payload, enabled_tools=self.enabled_tools)
@@ -557,7 +557,7 @@ class ExceptionHierarchyTests(TestCase):
     def test_provider_response_error_is_exception(self):
         self.assertTrue(issubclass(ai_agent.ProviderResponseError, Exception))
 
-        def test_exceptions_are_distinct(self):
+    def test_exceptions_are_distinct(self):
         self.assertFalse(issubclass(ai_agent.ProviderConfigurationError, ai_agent.ProviderRequestError))
         self.assertFalse(issubclass(ai_agent.ProviderResponseError, ai_agent.ProviderConfigurationError))
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 const EXAMPLE_PROMPTS = [
+  'Create a short promotional video',
   'Make the selected clip grayscale and 1.25x faster',
   'Trim the selected clip to 5 seconds and add a title',
   'Set this composition to 1080 by 1920',
@@ -10,7 +11,14 @@ function getSpeechRecognition() {
   return window.SpeechRecognition || window.webkitSpeechRecognition || null
 }
 
-function AIChatPanel({ messages, onSend, loading, error, selectedClip, assets, lastResult, onUndo, failedPrompt, onRetry }) {
+function receiptLabel(result, phase) {
+  if (result.status === 'error') return 'failed'
+  if (result.output?.changed) return phase === 'committed' ? 'applied' : ['failed', 'clarify', 'unavailable'].includes(phase) ? 'discarded' : 'staged'
+  if (result.output?.deferred) return ['failed', 'clarify', 'unavailable'].includes(phase) ? 'not executed' : 'queued'
+  return 'completed'
+}
+
+function AIChatPanel({ messages, onSend, loading, error, selectedClip, assets, lastResult, onUndo, failedPrompt, onRetry, progress, review, onReview, onCancel }) {
   const [input, setInput] = useState('')
   const [listening, setListening] = useState(false)
   const [speechError, setSpeechError] = useState('')
@@ -87,8 +95,46 @@ function AIChatPanel({ messages, onSend, loading, error, selectedClip, assets, l
             <p>{message.content}</p>
           </div>
         ))}
-        {loading && <div className="ai-message assistant"><span className="ai-message-role">AI Agent</span><p>Reviewing your composition...</p></div>}
+        {loading && <div className="ai-message assistant"><span className="ai-message-role">AI Agent</span><p>{progress?.message || 'Reading your composition...'}</p></div>}
       </div>
+
+      {progress && (
+        <div className="ai-run-progress" aria-live="polite">
+          <p>{progress.message}</p>
+          {progress.results?.length > 0 && <ol>{progress.results.map((result) => (
+            <li key={result.id}>{result.name}: {receiptLabel(result, progress.phase)}
+              {result.output?.text && <details><summary>Transcript</summary><p>{result.output.text}</p></details>}
+            </li>
+          ))}</ol>}
+          {loading && <button type="button" onClick={onCancel}>Cancel request</button>}
+        </div>
+      )}
+
+      {review && (
+        <section className="ai-review" role="dialog" aria-modal="false" aria-label={review.title}>
+          <h3>{review.title}</h3>
+          {review.kind === 'scenes' && <ol>{review.scenes.map((scene, index) => (
+            <li key={index}><strong>{scene.duration}s</strong> — {scene.description}{scene.text && <p>Text: {scene.text}</p>}</li>
+          ))}</ol>}
+          {review.kind === 'charge' && <>
+            <p>{review.tool} via {review.provider}</p>
+            <pre>{JSON.stringify(review.arguments, null, 2)}</pre>
+            <p>{review.cost_notice}</p>
+            {review.sends_source_media && <p>This sends the selected audio/video file to the configured transcription service.</p>}
+            <p>Approve this specific job only. Cancelling later or undoing edits cannot reverse service charges.</p>
+          </>}
+          {review.kind === 'asset' && <>
+            {review.asset.type.startsWith('image/') ? <img src={review.asset.previewUrl} alt="Generated asset preview" />
+              : review.asset.type.startsWith('video/') ? <video controls src={review.asset.previewUrl} />
+                : <audio controls src={review.asset.previewUrl} />}
+            <p>Approve this asset for use in the staged timeline.</p>
+          </>}
+          <div className="ai-result-actions">
+            <button type="button" onClick={() => onReview(true)}>{review.kind === 'charge' ? 'Approve paid job' : review.kind === 'asset' ? 'Use this asset' : 'Approve scene plan'}</button>
+            <button type="button" onClick={() => onReview(false)}>Decline</button>
+          </div>
+        </section>
+      )}
 
       {(error || speechError) && <p className="message error ai-error" role="alert">{error || speechError}</p>}
       {(error || failedPrompt || lastResult) && (

@@ -4,7 +4,6 @@
 // Layout mirrors the reference design:
 //   header       → back arrow, "Zoom Fragment" title, red Delete action
 //   focus point  → selected clip preview with a draggable focus handle (A)
-//   effect cards → Camera Movement / 3D Effect toggles
 //   slider rows  → Zoom level / Transition speed (filled-track sliders)
 //   summary rows → fragment duration, zoom factor, transition duration
 //
@@ -13,7 +12,7 @@
 // The fragment summary derives from the timeline-selected clip; with no
 // selection the panel still works but shows a hint and zeroed duration.
 
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 const ZOOM_LEVEL_MIN = 1
 const ZOOM_LEVEL_MAX = 3
@@ -72,24 +71,6 @@ const FocusIcon = () => (
   </Icon>
 )
 
-const CameraMoveIcon = () => (
-  <Icon>
-    <path d="M5 19 19 5" />
-    <path d="M9 5h10v10" />
-    <path d="M5 19h4" />
-    <path d="M5 19v-4" />
-  </Icon>
-)
-
-const CubeIcon = () => (
-  <Icon>
-    <path d="M12 3l7.5 4.3v9.4L12 21l-7.5-4.3V7.3z" />
-    <path d="M12 12l7.5-4.7" />
-    <path d="M12 12 4.5 7.3" />
-    <path d="M12 12v9" />
-  </Icon>
-)
-
 const ZoomLevelIcon = () => (
   <Icon>
     <circle cx="11" cy="11" r="6.5" />
@@ -142,9 +123,14 @@ function ZoomSliderRow({ icon, label, value, min, max, step, onChange, format })
   )
 }
 
-function ZoomPanel({ fragment, onChange, onBack, onDelete, selectedClip, previewUrl }) {
+function ZoomPanel({ fragment, onChange, onAdd, openDetail, onDetailBack, onDelete, selectedClip, previewUrl }) {
   const stageRef = useRef(null)
   const draggingRef = useRef(false)
+  const [isDetailOpen, setIsDetailOpen] = useState(false)
+
+  useEffect(() => {
+    if (openDetail) setIsDetailOpen(true)
+  }, [openDetail])
 
   const applyFocusFromPointer = (event) => {
     const stage = stageRef.current
@@ -180,17 +166,35 @@ function ZoomPanel({ fragment, onChange, onBack, onDelete, selectedClip, preview
     stage.addEventListener('pointercancel', handleUp)
   }
 
-  const fragmentStart = selectedClip ? selectedClip.startTime : 0
-  const fragmentEnd = selectedClip ? selectedClip.startTime + selectedClip.duration : 0
+  const fragmentStart = Number(fragment.startTime) || 0
+  const fragmentEnd = Number(fragment.endTime) || (fragmentStart + 2)
   const fragmentSeconds = Math.max(0, fragmentEnd - fragmentStart)
   const transitionDuration = fragmentSeconds > 0
     ? Math.min(fragmentSeconds, Math.max(0.2, (fragmentSeconds * TRANSITION_SPEED_DIVISOR) / fragment.transitionSpeed))
     : 0
 
+  const summaryCardTitle = fragment.id ? 'Zoom Fragment' : 'No zoom fragment added'
+  const summaryCardSubtitle = fragment.id
+    ? `${formatClock(fragmentStart)} - ${formatClock(fragmentEnd)}`
+    : 'Add a two-second zoom at the current playhead'
+
   return (
     <div className="zoom-panel" aria-label="Zoom Fragment">
       <div className="zoom-header">
-        <button type="button" className="zoom-back" onClick={onBack} aria-label="Back to media">&#8592;</button>
+        {isDetailOpen ? (
+          <button
+            type="button"
+            className="zoom-back"
+            onClick={() => {
+              setIsDetailOpen(false)
+              onDetailBack()
+            }}
+            aria-label="Back to Zoom fragments"
+            title="Back to Zoom fragments"
+          >
+            &#8592;
+          </button>
+        ) : <span className="zoom-header-spacer" aria-hidden="true" />}
         <h2 className="zoom-title">Zoom Fragment</h2>
         <button type="button" className="zoom-delete" onClick={onDelete} aria-label="Delete zoom fragment">
           <TrashIcon />
@@ -199,98 +203,99 @@ function ZoomPanel({ fragment, onChange, onBack, onDelete, selectedClip, preview
       </div>
 
       <div className="zoom-body">
-        <p className="zoom-section-label">
-          <FocusIcon />
-          Focus point
-        </p>
-
-        <div
-          className="zoom-stage"
-          ref={stageRef}
-          onPointerDown={handleStagePointerDown}
-          role="application"
-          aria-label="Drag to set the zoom focus point"
-        >
-          {previewUrl ? (
-            <img src={previewUrl} alt={selectedClip ? selectedClip.fileName : 'Clip preview'} draggable={false} />
-          ) : (
-            <div className="zoom-stage-placeholder" aria-hidden="true">&#127916;</div>
-          )}
-          <span
-            className="zoom-focus-handle"
-            style={{ left: `${fragment.focus.x * 100}%`, top: `${fragment.focus.y * 100}%` }}
-            aria-hidden="true"
-          >
-            A
-          </span>
-        </div>
-
-        {selectedClip ? (
-          <p className="zoom-hint">{selectedClip.fileName}</p>
+        {!isDetailOpen ? (
+          <div className="zoom-summary-card">
+            <div className="zoom-summary-card-icon" aria-hidden="true"><FocusIcon /></div>
+            <div className="zoom-summary-card-copy">
+              <span className="zoom-summary-card-kicker">Zoom fragment</span>
+              <strong>{summaryCardTitle}</strong>
+              <small>{summaryCardSubtitle}</small>
+            </div>
+            <div className="zoom-summary-card-meta">
+              <b>{fragment.zoomLevel.toFixed(1)}x</b>
+              <span>{transitionDuration.toFixed(1)}s</span>
+            </div>
+            <button
+              type="button"
+              className="zoom-summary-card-button"
+              onClick={() => {
+                onAdd()
+                setIsDetailOpen(true)
+              }}
+            >
+              {fragment.id ? 'Add another Zoom' : 'Add Zoom'}
+            </button>
+          </div>
         ) : (
-          <p className="zoom-hint">Select a clip on the timeline to attach this zoom fragment to it.</p>
+          <>
+            <p className="zoom-section-label">
+              <FocusIcon />
+              Focus point
+            </p>
+
+            <div
+              className="zoom-stage"
+              ref={stageRef}
+              onPointerDown={handleStagePointerDown}
+              role="application"
+              aria-label="Drag to set the zoom focus point"
+            >
+              {previewUrl ? (
+                <img src={previewUrl} alt={selectedClip ? selectedClip.fileName : 'Clip preview'} draggable={false} />
+              ) : (
+                <div className="zoom-stage-placeholder" aria-hidden="true">&#127916;</div>
+              )}
+              <span
+                className="zoom-focus-handle"
+                style={{ left: `${fragment.focus.x * 100}%`, top: `${fragment.focus.y * 100}%` }}
+                aria-hidden="true"
+              >
+                A
+              </span>
+            </div>
+
+            {selectedClip ? (
+              <p className="zoom-hint">{selectedClip.fileName}</p>
+            ) : (
+              <p className="zoom-hint">Select a clip on the timeline to attach this zoom fragment to it.</p>
+            )}
+
+            <ZoomSliderRow
+              icon={<ZoomLevelIcon />}
+              label="Zoom level"
+              value={fragment.zoomLevel}
+              min={ZOOM_LEVEL_MIN}
+              max={ZOOM_LEVEL_MAX}
+              step={ZOOM_LEVEL_STEP}
+              format={(value) => value.toFixed(1)}
+              onChange={(next) => onChange((prev) => ({ ...prev, zoomLevel: next }))}
+            />
+
+            <ZoomSliderRow
+              icon={<SpeedIcon />}
+              label="Transition speed"
+              value={fragment.transitionSpeed}
+              min={TRANSITION_SPEED_MIN}
+              max={TRANSITION_SPEED_MAX}
+              step={TRANSITION_SPEED_STEP}
+              format={(value) => value.toFixed(1)}
+              onChange={(next) => onChange((prev) => ({ ...prev, transitionSpeed: next }))}
+            />
+
+            <div className="zoom-summary">
+              <span className="zoom-summary-label">Fragment duration</span>
+              <span className="zoom-summary-value">{formatClock(fragmentStart)} - {formatClock(fragmentEnd)}</span>
+            </div>
+            <div className="zoom-summary">
+              <span className="zoom-summary-label">Zoom factor</span>
+              <span className="zoom-summary-value">{fragment.zoomLevel.toFixed(1)}&#215;</span>
+            </div>
+            <div className="zoom-summary">
+              <span className="zoom-summary-label">Transition duration</span>
+              <span className="zoom-summary-value">{transitionDuration.toFixed(1)}s</span>
+            </div>
+          </>
         )}
-
-        <div className="zoom-card">
-          <span className="zoom-card-icon" aria-hidden="true"><CameraMoveIcon /></span>
-          <span className="zoom-card-text">
-            <b>Camera Movement</b>
-            <small>Panning during zoom</small>
-          </span>
-          <ZoomToggle
-            checked={fragment.cameraMovement}
-            onChange={(next) => onChange((prev) => ({ ...prev, cameraMovement: next }))}
-            label="Camera movement"
-          />
-        </div>
-
-        <div className="zoom-card">
-          <span className="zoom-card-icon" aria-hidden="true"><CubeIcon /></span>
-          <span className="zoom-card-text">
-            <b>3D Effect</b>
-            <small>Perspective with depth</small>
-          </span>
-          <ZoomToggle
-            checked={fragment.threeDEffect}
-            onChange={(next) => onChange((prev) => ({ ...prev, threeDEffect: next }))}
-            label="3D effect"
-          />
-        </div>
-
-        <ZoomSliderRow
-          icon={<ZoomLevelIcon />}
-          label="Zoom level"
-          value={fragment.zoomLevel}
-          min={ZOOM_LEVEL_MIN}
-          max={ZOOM_LEVEL_MAX}
-          step={ZOOM_LEVEL_STEP}
-          format={(value) => value.toFixed(1)}
-          onChange={(next) => onChange((prev) => ({ ...prev, zoomLevel: next }))}
-        />
-
-        <ZoomSliderRow
-          icon={<SpeedIcon />}
-          label="Transition speed"
-          value={fragment.transitionSpeed}
-          min={TRANSITION_SPEED_MIN}
-          max={TRANSITION_SPEED_MAX}
-          step={TRANSITION_SPEED_STEP}
-          format={(value) => value.toFixed(1)}
-          onChange={(next) => onChange((prev) => ({ ...prev, transitionSpeed: next }))}
-        />
-
-        <div className="zoom-summary">
-          <span className="zoom-summary-label">Fragment duration</span>
-          <span className="zoom-summary-value">{formatClock(fragmentStart)} - {formatClock(fragmentEnd)}</span>
-        </div>
-        <div className="zoom-summary">
-          <span className="zoom-summary-label">Zoom factor</span>
-          <span className="zoom-summary-value">{fragment.zoomLevel.toFixed(1)}&#215;</span>
-        </div>
-        <div className="zoom-summary">
-          <span className="zoom-summary-label">Transition duration</span>
-          <span className="zoom-summary-value">{transitionDuration.toFixed(1)}s</span>
-        </div>
       </div>
     </div>
   )

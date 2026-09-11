@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from 'react'
+﻿import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import './App.css'
 import { createComposition, createCompositionClip, COMPOSITION_DEFAULTS } from './state/composition'
 import { loadAssetMetadata, resolveVideoDuration, revokeObjectUrlAsset } from './assets/AssetManager'
@@ -14,15 +14,23 @@ import AIChatPanel from './components/AIChatPanel'
 import ZoomPanel from './components/ZoomPanel'
 import { useClientExport, EXPORT_FORMATS } from './renderer/useClientExport'
 import { createCompositionText } from './state/composition'
-import { applyEditingActions, syncTimelineItems } from './state/editingCommands'
+import { syncTimelineItems } from './state/editingCommands'
 import { toEvenDimension } from './dimensions/DimensionPresets'
+
+import { createBrowserAgent, describeAssets, assetId } from './agent/browserAgent'
+import { createHistory, recordHistory, restoreHistory } from './state/compositionHistory'
+import { beginGoalTurn, receiveGoalPlan } from './agent/goalBrief'
 
 const API_BASE = '/api'
 
 // Default settings for the Zoom Fragment editor (see components/ZoomPanel).
 // focus is the draggable focus point as fractions of the frame (0..1).
-// clipId binds the effect to one timeline clip; null means "not attached".
+// Each fragment occupies an independent timeline range. clipId is retained
+// only for compatibility with older saved fragment data.
 const DEFAULT_ZOOM_FRAGMENT = {
+  id: null,
+  startTime: 0,
+  endTime: 2,
   clipId: null,
   clipFileName: '',
   focus: { x: 0.5, y: 0.45 },
@@ -109,7 +117,8 @@ const generateRulerMarks = (duration, zoom) => {
 
 function App() {
   const [clips, setClips] = useState([])
-  const [audioFile, setAudioFile] = useState(null)
+  const [uploadedAudioFile, setUploadedAudioFile] = useState(null)
+  const [agentAudioAssets, setAgentAudioAssets] = useState({})
   const [imageDuration, setImageDuration] = useState(3)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -127,12 +136,23 @@ function App() {
   const [selectedClipId, setSelectedClipId] = useState(null)
   const [activeTab, setActiveTab] = useState('videos')
   const [isMediaPanelCollapsed, setIsMediaPanelCollapsed] = useState(false)
-  const [zoomFragment, setZoomFragment] = useState({ ...DEFAULT_ZOOM_FRAGMENT })
+  const [zoomFragments, setZoomFragments] = useState([])
+  const [selectedZoomFragmentId, setSelectedZoomFragmentId] = useState(null)
+  const [openZoomDetail, setOpenZoomDetail] = useState(false)
   const [isExportPanelOpen, setIsExportPanelOpen] = useState(false)
   const [timelineItems, setTimelineItems] = useState([])
   const [selectedTextId, setSelectedTextId] = useState(null)
   const [composition, setComposition] = useState(createComposition())
-  const compositionHistoryRef = useRef({ past: [], future: [], last: JSON.stringify(composition), restoring: false })
+  const audioFile = composition.backgroundAudioAssetId ? agentAudioAssets[composition.backgroundAudioAssetId] || null : uploadedAudioFile
+  const setAudioFile = (file) => {
+    setUploadedAudioFile(file)
+    setComposition((previous) => {
+      const next = { ...previous }
+      delete next.backgroundAudioAssetId
+      return next
+    })
+  }
+  const compositionHistoryRef = useRef(createHistory(composition))
   const [clipDurations, setClipDurations] = useState([])
   const [previewImages, setPreviewImages] = useState({})
   const [previewVideos, setPreviewVideos] = useState({})
@@ -151,39 +171,23 @@ function App() {
   const recordedDurationsRef = useRef(new Map())
   const previewResizeRef = useRef(null)
 
-  useEffect(() => {
-    const serialized = JSON.stringify(composition)
-    const history = compositionHistoryRef.current
-    if (serialized === history.last) return
-    if (history.restoring) {
-      history.restoring = false
-    } else {
-      history.past.push(JSON.parse(history.last))
-      history.future = []
-    }
-    history.last = serialized
+  useLayoutEffect(() => {
+    recordHistory(compositionHistoryRef.current, composition)
   }, [composition])
 
   const undoComposition = () => {
-    const history = compositionHistoryRef.current
-    const previous = history.past.pop()
+    const previous = restoreHistory(compositionHistoryRef.current, 'undo')
     if (!previous) return
-    history.future.push(composition)
-    history.restoring = true
-    history.last = JSON.stringify(previous)
     setComposition(previous)
     setTimelineItems(syncTimelineItems(timelineItems, previous))
     return previous
   }
 
   const redoComposition = () => {
-    const history = compositionHistoryRef.current
-    const next = history.future.pop()
+    const next = restoreHistory(compositionHistoryRef.current, 'redo')
     if (!next) return
-    history.past.push(composition)
-    history.restoring = true
-    history.last = JSON.stringify(next)
     setComposition(next)
+    setTimelineItems(syncTimelineItems(timelineItems, next))
   }
 
   // Stable identity key for a clip file (name + size + last modified).
@@ -283,18 +287,50 @@ function App() {
   const [aiMessages, setAiMessages] = useState([])
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState('')
-  const [aiPendingClarification, setAiPendingClarification] = useState(null)
+  const [aiGoal, setAiGoal] = useState(null)
   const [aiLastEditedTarget, setAiLastEditedTarget] = useState(null)
   const [aiLastResult, setAiLastResult] = useState(null)
   const [aiFailedPrompt, setAiFailedPrompt] = useState('')
-  const aiRequestRef = useRef(0)
   const aiInFlightKeyRef = useRef(null)
   const aiUndoRef = useRef(null)
   const compositionRef = useRef(composition)
+  const aiControllerRef = useRef(null)
+  const aiReviewResolverRef = useRef(null)
+  const [aiReview, setAiReview] = useState(null)
+  const [aiProgress, setAiProgress] = useState(null)
+  const aiEditorRef = useRef({ version: 0 })
+  const editorKey = JSON.stringify([composition, clips.map(assetId), audioFile ? assetId(audioFile) : null, selectedClipId, selectedTextId])
 
-  useEffect(() => {
+  const respondToAIReview = (accepted) => {
+    const resolve = aiReviewResolverRef.current
+    aiReviewResolverRef.current = null
+    setAiReview(null)
+    resolve?.(accepted)
+  }
+
+  const cancelAI = () => {
+    aiControllerRef.current?.abort()
+    respondToAIReview(false)
+  }
+
+  useLayoutEffect(() => {
+    if (aiEditorRef.current.key !== editorKey) {
+      aiEditorRef.current = { ...aiEditorRef.current, key: editorKey, version: aiEditorRef.current.version + 1 }
+    }
     compositionRef.current = composition
-  }, [composition])
+    aiEditorRef.current.recordingState = recorder.recordingState
+    if (aiControllerRef.current && aiEditorRef.current.runVersion !== aiEditorRef.current.version) {
+      aiControllerRef.current.abort()
+      const resolve = aiReviewResolverRef.current
+      aiReviewResolverRef.current = null
+      resolve?.(false)
+    }
+  }, [editorKey, composition, recorder.recordingState])
+
+  useEffect(() => () => {
+    aiControllerRef.current?.abort()
+    aiReviewResolverRef.current?.(false)
+  }, [])
 
   const compositionVideoDuration = composition.tracks[0].clips.reduce(
     (sum, clip) => sum + clip.duration,
@@ -543,33 +579,39 @@ function App() {
     if (pending === 0) setPreviewImages({ ...newImages })
   }, [clips, clipPreviews])
 
-  // Build hidden <video> elements for video clips so the canvas can draw frames from them
+  // Rebuild video sources when the media library changes, including generated
+  // assets. Never retain refs to object URLs revoked by the previous effect.
   useEffect(() => {
-    const createdUrls = []
-
+    const urls = []
+    const videos = {}
+    let cancelled = false
     clips.forEach((file, index) => {
       if (!file.type.startsWith('video/')) return
-      if (hiddenVideoRefs.current[index]) return // already created
-
       const url = URL.createObjectURL(file)
-      createdUrls.push(url)
-
+      urls.push(url)
       const video = document.createElement('video')
-      video.src = url
       video.muted = true
       video.preload = 'auto'
       video.playsInline = true
-      // MediaRecorder WebM files report duration === Infinity, which leaves
-      // this element unseekable and the canvas preview stuck. The documented
-      // resolveVideoDuration seek workaround computes the real duration so
-      // the preview can play the full recording.
-      resolveVideoDuration(video).catch(() => {})
-      hiddenVideoRefs.current[index] = video
-      setPreviewVideos((prev) => ({ ...prev, [index]: video }))
+      video.onloadeddata = () => {
+        if (!cancelled) setPreviewVideos({ ...videos })
+      }
+      video.onloadedmetadata = () => { resolveVideoDuration(video).catch(() => {}) }
+      video.src = url
+      videos[index] = video
     })
-
+    hiddenVideoRefs.current = videos
+    setPreviewVideos(videos)
     return () => {
-      createdUrls.forEach((url) => URL.revokeObjectURL(url))
+      cancelled = true
+      Object.values(videos).forEach((video) => {
+        video.onloadeddata = null
+        video.onloadedmetadata = null
+        video.pause()
+        video.removeAttribute('src')
+        video.load()
+      })
+      urls.forEach((url) => URL.revokeObjectURL(url))
     }
   }, [clips])
 
@@ -599,11 +641,11 @@ function App() {
       }
     }
 
-    drawCompositionFrame(ctx, canvas, { ...composition, zoomFragment }, currentTime, {
+    drawCompositionFrame(ctx, canvas, { ...composition, zoomFragments }, currentTime, {
       images: previewImages,
       videos: previewVideos,
     })
-  }, [currentTime, composition, zoomFragment, previewImages, previewVideos, clips, previewWidth, previewHeight, isPlaying])
+  }, [currentTime, composition, zoomFragments, previewImages, previewVideos, clips, previewWidth, previewHeight, isPlaying])
 
   // Drive the active clip hidden video element so its audio plays in sync
   // with the shared timeline clock. During playback only the active clip is
@@ -667,9 +709,9 @@ function App() {
     }
     setError('')
     return await clientExport.start({
-      // zoomFragment rides inside the composition so the exporter's shared
+      // zoomFragments rides inside the composition so the exporter's shared
       // render path applies the exact same zoom the user saw in preview.
-      composition: { ...composition, zoomFragment },
+      composition: { ...composition, zoomFragments },
       clips,
       audioFile,
       mediaImages: { ...previewImages },
@@ -993,33 +1035,53 @@ function App() {
 
   const handleSelectZoom = () => {
     setActiveSection('zoom')
+    setOpenZoomDetail(false)
     setIsExportPanelOpen(false)
     setIsRecorderSetupOpen(false)
     setIsMediaPanelCollapsed(false)
-    // Attach the fragment to the clip selected on the timeline (if any), so
-    // the effect targets exactly what the user is editing. Selecting another
-    // clip and reopening Zoom moves the fragment to that new clip.
-    if (selectedClipId) {
-      const bound = composition.tracks[0].clips.find((clip) => clip.id === selectedClipId)
-      if (bound) {
-        setZoomFragment((prev) => ({ ...prev, clipId: bound.id, clipFileName: bound.fileName }))
-      }
+  }
+
+  const handleAddZoom = () => {
+    const fragmentDuration = 2
+    const startTime = Math.max(0, Math.min(currentTime, Math.max(0, totalDuration - fragmentDuration)))
+    const endTime = Math.min(totalDuration, startTime + fragmentDuration)
+    if (endTime - startTime < 0.1) return false
+    const overlaps = zoomFragments.some((fragment) => startTime < fragment.endTime && endTime > fragment.startTime)
+    if (overlaps) return false
+    const newFragment = {
+      ...DEFAULT_ZOOM_FRAGMENT,
+      id: `zoom-${Date.now()}-${Math.random()}`,
+      startTime,
+      endTime,
     }
+    setZoomFragments((prev) => [...prev, newFragment].sort((a, b) => a.startTime - b.startTime))
+    setSelectedZoomFragmentId(newFragment.id)
+    return true
   }
 
   // ZoomPanel calls onChange with either a patch object or an updater
   // function, so functional updates never hit stale captured state while
   // the focus point is being dragged.
   const updateZoomFragment = (patch) => {
-    setZoomFragment((prev) => ({ ...prev, ...(typeof patch === 'function' ? patch(prev) : patch) }))
+    setZoomFragments((prev) => prev.map((fragment) => {
+      if (fragment.id !== selectedZoomFragmentId) return fragment
+      const updates = typeof patch === 'function' ? patch(fragment) : patch
+      return { ...fragment, ...updates }
+    }))
   }
 
   const handleZoomBack = () => {
-    setActiveSection('media')
+    handleSelectMedia()
+  }
+
+  const handleZoomPanelBack = () => {
+    setOpenZoomDetail(false)
   }
 
   const handleDeleteZoomFragment = () => {
-    setZoomFragment({ ...DEFAULT_ZOOM_FRAGMENT, focus: { ...DEFAULT_ZOOM_FRAGMENT.focus } })
+    if (!selectedZoomFragmentId) return
+    setZoomFragments((prev) => prev.filter((fragment) => fragment.id !== selectedZoomFragmentId))
+    setSelectedZoomFragmentId(null)
   }
 
   const undoLatestAIEdit = () => {
@@ -1042,94 +1104,104 @@ function App() {
 
   const handleSendAI = async (prompt) => {
     const cleanPrompt = prompt.trim()
-    if (!cleanPrompt) return
+    if (!cleanPrompt || aiInFlightKeyRef.current) return
     if (/^undo(?: the)? last edit[.!]?$/i.test(cleanPrompt)) {
       undoLatestAIEdit()
       return
     }
+    let goalContext = beginGoalTurn(aiGoal, cleanPrompt, compositionRef.current)
+    setAiGoal(goalContext)
     const snapshot = JSON.stringify(compositionRef.current)
-    const requestKey = `${cleanPrompt.toLowerCase()}::${snapshot}`
-    if (aiInFlightKeyRef.current === requestKey) return
-    const requestId = aiRequestRef.current + 1
-    aiRequestRef.current = requestId
-    aiInFlightKeyRef.current = requestKey
-    const userMessage = { id: `${Date.now()}-user-${requestId}`, role: 'user', content: cleanPrompt }
-    const recentHistory = [...aiMessages, userMessage].slice(-12).map(({ role, content }) => ({ role, content }))
+    const version = aiEditorRef.current.version
+    const controller = new AbortController()
+    aiControllerRef.current = controller
+    aiEditorRef.current.runVersion = version
+    aiInFlightKeyRef.current = cleanPrompt
+    const userMessage = { id: crypto.randomUUID(), role: 'user', content: cleanPrompt }
+    const history = [...aiMessages, userMessage].slice(-12).map(({ role, content }) => ({ role, content }))
     setAiMessages((previous) => [...previous, userMessage])
     setAiLoading(true)
     setAiError('')
     setAiFailedPrompt('')
-    const selected = compositionRef.current.tracks[0].clips.find((clip) => clip.id === selectedClipId)
-    const assets = clips.map((file, index) => ({ id: String(index), name: file.name, type: file.type, size: file.size }))
-
+    setAiProgress(null)
+    const assertFresh = () => {
+      if (controller.signal.aborted || aiEditorRef.current.version !== version) throw new Error('Request cancelled or editor changed. Staged edits were discarded. Submitted media jobs may still complete; check the service account before retrying.')
+    }
+    const review = async (details) => {
+      assertFresh()
+      setAiProgress((previous) => ({ ...previous, phase: 'review', message: 'Waiting for your review' }))
+      const accepted = await new Promise((resolve) => {
+        aiReviewResolverRef.current = resolve
+        setAiReview(details)
+      })
+      assertFresh()
+      return accepted
+    }
+    const context = () => ({
+      selectedClipId, selectedTextId, lastEditedTarget: aiLastEditedTarget,
+      recordingState: aiEditorRef.current.recordingState,
+    })
+    const agent = createBrowserAgent({
+      signal: controller.signal, getVersion: () => aiEditorRef.current.version, assertFresh,
+      context, review, progress: setAiProgress,
+      onPlan: (plan) => {
+        goalContext = receiveGoalPlan(goalContext, plan)
+        setAiGoal(goalContext)
+        return goalContext
+      },
+      commit: (stage) => {
+        assertFresh()
+        aiControllerRef.current = null
+        // Keep asset identities available through undo/redo, while one composition commit
+        // records the complete agent edit in the existing history.
+        if (stage.files.length !== clips.length || stage.files.some((file, index) => file !== clips[index])) setClips(stage.files)
+        setAgentAudioAssets((previous) => ({ ...previous, ...Object.fromEntries(stage.assets.filter((a) => a.type.startsWith('audio/')).map((a) => [a.id, a.file])) }))
+        if (JSON.stringify(stage.composition) !== snapshot) {
+          setComposition(stage.composition)
+          compositionRef.current = stage.composition
+          setTimelineItems(syncTimelineItems(timelineItems, stage.composition))
+          aiUndoRef.current = { before: snapshot, after: JSON.stringify(stage.composition) }
+          setAiLastEditedTarget(stage.lastEditedTarget)
+        }
+      },
+      executeUI: async (call) => {
+        if (call.name === 'open_recording_setup') {
+          handleSelectRecord()
+          return 'Opened recording setup. Choose your capture sources to start recording.'
+        }
+        if (call.name === 'stop_recording') {
+          if (aiEditorRef.current.recordingState !== 'recording') throw new Error('Recording already ended.')
+          recorder.stopRecording()
+          return 'Requested recording stop. Review the recording before adding it.'
+        }
+        handleSelectUpload()
+        return 'Opened Upload. Choose your media files there.'
+      },
+    })
     try {
-      const response = await fetch(`${API_BASE}/ai/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: cleanPrompt,
-          composition: compositionRef.current,
-          selected_clip: selected || null,
-          assets,
-          history: recentHistory,
-          pending_clarification: aiPendingClarification?.question || null,
-          last_edited_target: aiLastEditedTarget,
-          recording_state: recorder.recordingState,
-        }),
+      const result = await agent.run({
+        prompt: cleanPrompt, composition: compositionRef.current, files: clips,
+        selected_clip: compositionRef.current.tracks[0].clips.find((clip) => clip.id === selectedClipId) || null,
+        selected_text_id: selectedTextId,
+        assets: describeAssets(clips, clipDurations, [...Object.values(agentAudioAssets), uploadedAudioFile]),
+        history, ...goalContext,
+        last_edited_target: aiLastEditedTarget,
       })
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(payload.detail || 'AI Agent request failed.')
-      if (requestId !== aiRequestRef.current || JSON.stringify(compositionRef.current) !== snapshot) {
-        throw new Error('The composition changed while the AI was working. Please send the request again.')
-      }
-      if (payload.clarification) {
-        setAiPendingClarification({ question: payload.clarification, prompt: cleanPrompt })
-        setAiMessages((previous) => [...previous, { id: `${Date.now()}-assistant-${requestId}`, role: 'assistant', content: payload.clarification }])
-        return
-      }
-      if (!Array.isArray(payload.actions) || payload.actions.length === 0) {
-        setAiMessages((previous) => [...previous, { id: `${Date.now()}-assistant-${requestId}`, role: 'assistant', content: payload.summary || 'No edit was applied.' }])
-        setAiPendingClarification(null)
-        return
-      }
-      const result = applyEditingActions(compositionRef.current, payload.actions, {
-        selectedClipId,
-        selectedTextId,
-        lastEditedTarget: aiLastEditedTarget,
-        recordingState: recorder.recordingState,
-        openRecordingSetup: handleSelectRecord,
-        stopRecording: recorder.stopRecording,
-        openMediaUpload: handleSelectUpload,
-      })
-      const compositionChanged = JSON.stringify(result.composition) !== snapshot
-      setComposition(result.composition)
-      compositionRef.current = result.composition
-      setTimelineItems(syncTimelineItems(timelineItems, result.composition))
-      if (compositionChanged) {
-        aiUndoRef.current = { before: snapshot, after: JSON.stringify(result.composition) }
-        setAiLastEditedTarget(result.lastEditedTarget)
-      } else {
-        aiUndoRef.current = null
-      }
-      setAiPendingClarification(null)
-      setAiLastResult(compositionChanged ? result.summaries.join(' ') : null)
-      setAiMessages((previous) => [...previous, {
-        id: `${Date.now()}-assistant-${requestId}`,
-        role: 'assistant',
-        content: compositionChanged
-          ? (result.summaries.join(' ') || payload.summary || `Applied ${result.summaries.length} edit${result.summaries.length === 1 ? '' : 's'}.`)
-          : 'No composition change was needed.',
-      }])
+      setAiLastResult(result.committed ? result.message : null)
+      setAiMessages((previous) => [...previous, { id: crypto.randomUUID(), role: 'assistant', content: result.message + (result.status !== 'done' && result.results.length ? ' Staged timeline edits were discarded.' : '') }])
+      setAiProgress({ phase: result.committed ? 'committed' : result.status, message: result.committed ? 'Edits applied together. Undo is available.' : 'No timeline changes applied.', results: result.results })
     } catch (requestError) {
-      if (requestId === aiRequestRef.current) {
-        setAiError(requestError.message || 'AI Agent request failed.')
-        setAiFailedPrompt(cleanPrompt)
-      }
+      const receipts = requestError.receipts || []
+      const serviceRan = receipts.some((r) => ['generate_image', 'generate_video', 'text_to_speech', 'transcribe'].includes(r.name))
+      setAiError(`${requestError.message} No staged timeline edits were applied.${serviceRan ? ' Media service jobs are separate from timeline undo and may have been billed.' : ''}`)
+      // Retrying a paid operation is a new job; require a new user request and confirmation.
+      setAiFailedPrompt(serviceRan || controller.signal.aborted ? '' : cleanPrompt)
+      setAiProgress({ phase: 'failed', message: 'Staged edits discarded.', results: receipts })
     } finally {
-      if (requestId === aiRequestRef.current) {
-        setAiLoading(false)
-        aiInFlightKeyRef.current = null
-      }
+      aiControllerRef.current = null
+      aiInFlightKeyRef.current = null
+      respondToAIReview(false)
+      setAiLoading(false)
     }
   }
 
@@ -1344,19 +1416,17 @@ function App() {
         ? 'failed'
         : clientExport.status === 'cancelled' ? 'cancelled' : 'idle'
   const selectedClip = composition.tracks[0].clips.find((c) => c.id === selectedClipId)
-  // The Zoom Fragment panel treats the clip the fragment is bound to as its
-  // target (the panel's focus preview / fragment duration follow it). Falls
-  // back to the timeline selection while the fragment is unattached.
-  const zoomClip = zoomFragment.clipId
-    ? composition.tracks[0].clips.find((clip) => clip.id === zoomFragment.clipId)
-    : null
-  const zoomPanelClip = zoomClip || selectedClip
+  // The selected video supplies the focus preview; Zoom Fragment timing is
+  // independent and comes from the selected fragment's timeline range.
+  const selectedZoomFragment = zoomFragments.find((fragment) => fragment.id === selectedZoomFragmentId) || null
+  const zoomPanelClip = selectedClip
   const zoomPanelPreview = zoomPanelClip ? clipPreviews[zoomPanelClip.fileIndex] : null
   // Live zoom state at the playhead — drives the preview badge so it is
   // obvious the fragment is being applied frame-by-frame.
   const activeZoomClip = findActiveClip(composition, currentTime)
-  const activeZoom = (zoomFragment.clipId && activeZoomClip && zoomFragment.clipId === activeZoomClip.id)
-    ? zoomEffectsForTime(zoomFragment, activeZoomClip.startTime, activeZoomClip.duration, currentTime)
+  const activeZoomFragment = zoomFragments.find((fragment) => currentTime >= fragment.startTime && currentTime <= fragment.endTime)
+  const activeZoom = activeZoomFragment
+    ? zoomEffectsForTime(activeZoomFragment, activeZoomClip?.startTime, activeZoomClip?.duration, currentTime)
     : null
   const durationByUid = new Map(
     composition.tracks[0].clips.map((clip) => [clip.id, clip.duration])
@@ -1412,9 +1482,11 @@ function App() {
         {activeSection === 'zoom' ? (
           !isMediaPanelCollapsed && (
             <ZoomPanel
-              fragment={zoomFragment}
+              fragment={selectedZoomFragment || { ...DEFAULT_ZOOM_FRAGMENT, id: null }}
               onChange={updateZoomFragment}
-              onBack={handleZoomBack}
+              onAdd={handleAddZoom}
+              openDetail={openZoomDetail}
+              onDetailBack={handleZoomPanelBack}
               onDelete={handleDeleteZoomFragment}
               selectedClip={zoomPanelClip}
               previewUrl={zoomPanelPreview}
@@ -1432,6 +1504,10 @@ function App() {
             onUndo={undoLatestAIEdit}
             failedPrompt={aiFailedPrompt}
             onRetry={handleSendAI}
+            progress={aiProgress}
+            review={aiReview}
+            onReview={respondToAIReview}
+            onCancel={cancelAI}
           />
         ) : !isMediaPanelCollapsed && !isExportPanelOpen && (
           <>
@@ -1664,7 +1740,7 @@ function App() {
           />
         )}
 
-        {(timelineItems.length > 0 || audioFile) && (
+        {(timelineItems.length > 0 || audioFile || zoomFragments.length > 0) && (
           <div className="timeline-section compact">
             <div className="timeline-controls">
               <div className="timeline-controls-top">
@@ -1848,6 +1924,32 @@ function App() {
                     ) : (
                       <em>Click a video in "My Videos" to add it here</em>
                     )}
+                  </div>
+                </div>
+                <div className="timeline-track zoom-track">
+                  <strong>ZOOM</strong>
+                  <div className="track-content zoom-track-content">
+                    {zoomFragments.map((fragment, index) => (
+                      <button
+                        type="button"
+                        key={fragment.id}
+                        className={fragment.id === selectedZoomFragmentId ? 'timeline-block zoom-block selected' : 'timeline-block zoom-block'}
+                        style={{
+                          marginLeft: `${fragment.startTime * zoom}px`,
+                          width: `${Math.max((fragment.endTime - fragment.startTime) * zoom - 4, 86)}px`,
+                        }}
+                        onClick={() => {
+                          setSelectedZoomFragmentId(fragment.id)
+                          setOpenZoomDetail(true)
+                          setActiveSection('zoom')
+                        }}
+                        title="Click to select Zoom Fragment"
+                      >
+                        <b>Zoom Fragment {index + 1}</b>
+                        <small>{formatTime(fragment.endTime - fragment.startTime)}</small>
+                      </button>
+                    ))}
+                    {!zoomFragments.length && <em>Click Add Zoom to create a fragment at the playhead</em>}
                   </div>
                 </div>
                 <div className="timeline-track"><strong>TEXT</strong><div className="track-content"><button type="button" className="timeline-add-track" onClick={handleAddText}>T&nbsp; + Add text</button>{composition.texts?.map((text) => <div key={text.id} className="timeline-block text-block" style={{ width: `${Math.max(text.duration * zoom - 4, 86)}px` }}><b>{text.content}</b><small>Text overlay</small></div>)}</div></div>

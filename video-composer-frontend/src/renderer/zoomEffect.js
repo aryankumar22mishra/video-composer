@@ -37,13 +37,16 @@ export function transitionDurationFor(fragment, clipDuration) {
 //   focusX/Y  — the effective view-center fractions (0..1) the zoom pivots on
 //   rotation  — extra degrees applied for the 3D effect (pivots on the focus)
 export function zoomEffectsForTime(fragment, clipStart, clipDuration, timelineTime) {
-  if (!fragment || !fragment.clipId) return null
+  if (!fragment) return null
   const zoomLevel = Number(fragment.zoomLevel)
   if (!Number.isFinite(zoomLevel) || zoomLevel <= 1) return null
 
-  const start = Number(clipStart) || 0
-  const duration = Math.max(0.001, Number(clipDuration) || 0)
-  if (timelineTime < start || timelineTime > start + duration) return null
+  const legacyStart = Number(clipStart) || 0
+  const legacyDuration = Math.max(0.001, Number(clipDuration) || 0)
+  const start = Number.isFinite(Number(fragment.startTime)) ? Number(fragment.startTime) : legacyStart
+  const end = Number.isFinite(Number(fragment.endTime)) ? Number(fragment.endTime) : start + legacyDuration
+  const duration = Math.max(0.001, end - start)
+  if (timelineTime < start || timelineTime > end) return null
 
   const progress01 = clamp01((timelineTime - start) / duration)
   const half = clamp01(transitionDurationFor(fragment, duration) / duration)

@@ -15,10 +15,52 @@ from .ai_agent import (
     ProviderResponseError,
     request_editing_actions,
 )
+from .planner import request_plan
+from .tool_registry import tool_definitions
+from .media_tools import prepare_operation, execute_operation
+from django.core.signing import BadSignature
+from .models import AgentOperation
 
 # Upper bound for a single clip duration (seconds) — rejects absurd client
 # values while leaving generous headroom for long screen recordings.
 MAX_CLIP_DURATION = 1800  # 30 minutes
+
+
+class AgentToolsView(APIView):
+    def get(self, request):
+        return Response({"tools": tool_definitions(request.query_params.get("recording_state", "idle"))})
+
+
+class AgentPlanView(APIView):
+    def post(self, request):
+        try:
+            return Response(request_plan(request.data))
+        except ProviderConfigurationError as exc:
+            return Response({"detail": str(exc) + " You can still edit manually using the timeline controls."}, status=503)
+        except (ProviderRequestError, ProviderResponseError) as exc:
+            return Response({"detail": str(exc)}, status=502)
+        except (ValueError, TypeError, KeyError):
+            return Response({"detail": "Invalid planner context or request limits exceeded."}, status=400)
+
+
+class AgentPrepareView(APIView):
+    def post(self, request):
+        try:
+            return Response(prepare_operation(request.data))
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        except (TypeError, KeyError, AttributeError):
+            return Response({"detail": "Invalid media operation request."}, status=400)
+
+
+class AgentExecuteView(APIView):
+    def post(self, request):
+        try:
+            return Response(execute_operation(request.data.get("approval_token", ""), request.FILES.get("media")))
+        except (BadSignature, AgentOperation.DoesNotExist):
+            return Response({"detail": "Confirmation expired or is invalid. Prepare the operation again."}, status=400)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=409)
 
 
 class AIAgentView(APIView):

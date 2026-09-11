@@ -20,35 +20,11 @@ class ProviderResponseError(Exception):
 
 logger = logging.getLogger(__name__)
 
-# These are the actions reported as implemented in your React command layer.
-SUPPORTED_TOOLS = {
-    "trim_clip", "split_clip", "reorder_clips", "update_text", "add_text",
-    "set_speed", "set_volume", "set_dimensions", "set_grayscale", "remove_clip_range", "keep_clip_range",
-}
+from .tool_registry import REGISTRY
 
-# Enable ONLY after matching frontend command handlers exist.
-# In backend .env, for example:
-# AI_EXTRA_TOOLS=keep_clip_range,remove_clip_range,open_recording_setup,stop_recording
-OPTIONAL_TOOLS = {
-    "open_recording_setup", "stop_recording", "open_media_upload",
-}
-
-ACTION_FIELDS = {
-    "trim_clip": {"clip_id", "duration"},
-    "split_clip": {"clip_id", "at_seconds"},
-    "reorder_clips": {"clip_ids"},
-    "update_text": {"text_id", "content"},
-    "add_text": {"content", "start_time", "duration"},
-    "set_speed": {"clip_id", "speed"},
-    "set_volume": {"clip_id", "volume"},
-    "set_dimensions": {"width", "height"},
-    "set_grayscale": {"clip_id", "enabled"},
-    "keep_clip_range": {"clip_id", "start_seconds", "end_seconds"},
-    "remove_clip_range": {"clip_id", "start_seconds", "end_seconds"},
-    "open_recording_setup": set(),
-    "stop_recording": set(),
-    "open_media_upload": set(),
-}
+SUPPORTED_TOOLS = {name for name, tool in REGISTRY.items() if tool["executor"] == "edit"}
+OPTIONAL_TOOLS = {name for name, tool in REGISTRY.items() if tool["executor"] == "ui"}
+ACTION_FIELDS = {name: set(tool["arguments"]["properties"]) for name, tool in REGISTRY.items()}
 
 SYSTEM_PROMPT = """
 You are an assistant inside a video editor. Return ONE JSON object only:
@@ -189,6 +165,8 @@ def validate_agent_response(payload, enabled_tools=None, recording_state="idle")
     enabled_tools = _enabled_tools() if enabled_tools is None else set(enabled_tools)
     if not isinstance(payload, dict):
         raise ValueError("The response must be a JSON object.")
+    if set(payload) - {"actions", "summary", "clarification"}:
+        raise ValueError("The response contains unexpected fields.")
     actions = payload.get("actions")
     if not isinstance(actions, list) or len(actions) > 20:
         raise ValueError("Expected an actions array containing at most 20 actions.")
@@ -272,13 +250,16 @@ def _parse_response(content, enabled_tools, recording_state):
         raise ProviderResponseError(f"Invalid AI editing response: {exc}") from exc
 
 
-def request_editing_actions(prompt, composition, selected_clip, assets, history=None, pending_clarification=None, last_edited_target=None, recording_state="idle",):
+def request_editing_actions(prompt, composition, selected_clip, assets, history=None, pending_clarification=None, last_edited_target=None, recording_state="idle", *, planner_context=None, system_override=None, response_parser=None):
     if not isinstance(prompt, str) or not prompt.strip():
         raise ProviderResponseError("Enter an editing instruction first.")
+    if not isinstance(composition, dict):
+        raise ProviderResponseError("Composition must be an object.")
     if history is not None and not isinstance(history, list):
         raise ProviderResponseError("Conversation history must be a list.")
-    enabled_tools = _enabled_tools()
-    system_prompt = _system_prompt(enabled_tools)
+    enabled_tools = set(REGISTRY) if response_parser else _enabled_tools()
+    system_prompt = system_override or _system_prompt(enabled_tools)
+    parse_response = response_parser or (lambda content: _parse_response(content, enabled_tools, recording_state))
     configured_provider = _setting("AI_PROVIDER")
     configured_base_url = _setting("AI_BASE_URL")
     if configured_provider:
@@ -311,6 +292,8 @@ def request_editing_actions(prompt, composition, selected_clip, assets, history=
         "last_edited_target": last_edited_target,
         "recording_state": recording_state,
     }
+    if planner_context is not None:
+        context.update(planner_context)
     if provider == "google":
         base_url = _setting(
             "AI_BASE_URL",
@@ -362,7 +345,7 @@ def request_editing_actions(prompt, composition, selected_clip, assets, history=
             choice = completion.choices[0]
             if choice.finish_reason == "length":
                 raise ProviderResponseError("The AI response was cut off. Try a smaller editing request.")
-            return _parse_response(choice.message.content, enabled_tools, recording_state)
+            return parse_response(choice.message.content)
         except ProviderResponseError:
             raise
         except Exception as exc:
@@ -418,6 +401,6 @@ def request_editing_actions(prompt, composition, selected_clip, assets, history=
             content = provider_payload["candidates"][0]["content"]["parts"][0]["text"]
         else:
             content = provider_payload["choices"][0]["message"]["content"]
-        return _parse_response(content, enabled_tools, recording_state)
+        return parse_response(content)
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ProviderResponseError("The AI provider returned an invalid editing response.") from exc

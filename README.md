@@ -33,6 +33,13 @@ Requirements:
 
 ### AI Agent
 
+The AI panel now uses a shared tool registry, multi-step planner and staged executor.
+It supports scene-plan approval, real result feedback, atomic timeline commits and
+separate configured media services with paid-job confirmation and asset previews.
+See [the planner guide](video-composer-backend/AGENT_PLANNER.md) for configuration,
+limits and testing. Run backend migrations after updating.
+
+
 Click **AI Agent** between Record and Export to open a persistent chat panel.
 Prompts can be typed or dictated; speech transcripts remain editable before
 sending. The backend receives only the prompt, composition metadata, selected
@@ -160,7 +167,7 @@ Current configuration is in [settings.py](video-composer-backend/video_composer/
 | Media URL | `/media/` |
 | Celery broker and results | `redis://localhost:6379/0` |
 
-There is no application `.env` loader configured. Project exports are stored under `media/projects/<project-id>/exports/`; legacy jobs use `media/uploads/`, `media/tmp/`, and `media/outputs/`.
+Django loads `video-composer-backend/.env` using `python-dotenv`. Project exports are stored under `media/projects/<project-id>/exports/`; legacy jobs use `media/uploads/`, `media/tmp/`, and `media/outputs/`.
 
 ### Project storage API
 
@@ -237,7 +244,7 @@ python manage.py check
 python manage.py test
 ```
 
-The backend's `composer/tests.py` is currently a scaffold with no test cases, and the frontend has no automated test script. Lint/build checks do not verify media playback, recording permissions, or output quality. For manual verification, compose an image and a short video, add background audio, change dimensions, export, and inspect the downloaded video and audio. Repeat with a confirmed screen recording.
+The backend has AI validation, planner and service receipt tests. The frontend's `npm test` runs staged executor, approval and undo/redo tests using Node's test runner. Lint/build checks do not verify media playback, recording permissions, or output quality. For manual verification, compose an image and a short video, add background audio, change dimensions, export, and inspect the downloaded video and audio. Repeat with a confirmed screen recording.
 
 ## Current limitations
 

@@ -1,151 +1,222 @@
-# Video Composer — Backend
+# Video Composer — Django backend
 
-The backend is a **Django 4.2** application powered by **Django REST Framework** that exposes a REST API for creating and managing video composition jobs. Asynchronous processing is handled by **Celery** with **Redis** as the broker, and **FFmpeg** performs the actual video stitching.
+This repository combines a browser-based video editor with a lightweight Django backend. The app is centered around React and the HTML5 Canvas renderer in the frontend; the backend mainly provides AI orchestration, optional project metadata APIs, and the legacy FFmpeg render queue.
+
+## Project overview
+
+The current editor runs primarily in the browser:
+
+- media uploads, timeline state, export, screen recording, and preview are handled in the frontend
+- AI actions are sent to the backend as structured editing commands
+- media files and composition state stay in browser memory unless a project API is used
+- the backend never needs to receive the raw source media for AI edits
+
+This keeps the editing flow fast, local, and compatible with browser-based export without requiring a heavy server render pipeline for normal use.
 
 ## Requirements
 
-- **Python** 3.12+
-- **Redis** (running on `localhost:6379` by default)
-- **FFmpeg** (installed and available on `PATH`)
+- Python 3.12+
+- Node.js 20+ / npm for the frontend
+- Redis for Celery when using the legacy render job flow
+- FFmpeg for the backend render queue and optional job processing
 
-## Setup
+## Quick start
 
-```bash
+### 1) Backend environment
+
+```powershell
 cd video-composer-backend
-
-# Create & activate a virtual environment
 python -m venv .venv
-.venv\Scripts\activate      # Windows
-# source .venv/bin/activate  # macOS / Linux
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run database migrations
-python manage.py migrate
-
-# (Optional) Create a superuser for Django admin
-python manage.py createsuperuser
-```
-
-Copy `.env.example` to `.env` and put your provider key in `.env`. Django
-loads this file automatically, so you no longer need to set AI or Redis
-variables in every PowerShell terminal:
-
-```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
 Copy-Item .env.example .env
-# Edit .env and set GROQ_API_KEY (or AI_API_KEY)
+python manage.py migrate
+```
+
+Copy `.env.example` to `.env`, then fill in values before starting the server.
+
+### 2) Frontend environment
+
+```powershell
+cd video-composer-frontend
+npm install
+npm run dev
+```
+
+Open the local Vite URL, usually `http://localhost:5173`.
+
+### 3) Run the backend API
+
+```powershell
+cd video-composer-backend
+.\.venv\Scripts\Activate.ps1
 python manage.py runserver
 ```
 
-`.env` is ignored by Git. Commit only `.env.example`; never commit provider
-keys or other secrets.
+The Django app runs on `http://localhost:8000`.
 
-## Run the project
+## Environment configuration
 
-You need **two terminals** — one for Django, one for Celery.
+The project loads environment variables from `video-composer-backend/.env` using `python-dotenv`. This is the main place for AI and backend settings.
 
-### Terminal 1 — Django dev server
+Example values:
 
-```bash
-cd video-composer-backend
-.venv\Scripts\activate
-python manage.py runserver
-# → http://localhost:8000
+```env
+DJANGO_SECRET_KEY=replace-with-a-long-random-secret
+DJANGO_DEBUG=true
+DJANGO_ALLOWED_HOSTS=127.0.0.1,localhost
+
+AI_PROVIDER=google
+AI_MODEL=gemini-2.5-flash
+AI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+AI_API_KEY=your-google-ai-studio-key
+AI_EXTRA_TOOLS=open_recording_setup,stop_recording,open_media_upload
+
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
+
+DATA_UPLOAD_MAX_MEMORY_SIZE=209715200
+FILE_UPLOAD_MAX_MEMORY_SIZE=209715200
 ```
 
-### Terminal 2 — Celery worker
+Notes:
 
-```bash
-cd video-composer-backend
-.venv\Scripts\activate
-celery -A video_composer worker -l info
+- `AI_PROVIDER` supports `google` and `openai`-style providers
+- `AI_BASE_URL` is optional for Google AI Studio, but required for OpenAI-compatible providers such as Groq
+- `AI_API_KEY` is the main key used by the backend, while some providers may also use `GROQ_API_KEY`
+- `.env` is git-ignored; do not commit real secrets
+
+### Example: Groq / OpenAI-compatible provider
+
+```env
+AI_PROVIDER=openai
+AI_MODEL=openai/gpt-oss-20b
+AI_BASE_URL=https://api.groq.com/openai/v1
+AI_API_KEY=your-groq-api-key
 ```
 
-Make sure **Redis** is running before starting Celery.
+## AI Agent
 
-## AI Agent configuration
+The current editor uses a registry-driven planner and staged browser executor.
+See [AGENT_PLANNER.md](AGENT_PLANNER.md) for architecture, service gateway
+configuration, approval behavior, limits and tests. Run `python manage.py migrate`
+after updating to add durable media-operation receipts.
 
-The React editor calls `POST /api/ai/` for structured editing actions. The
-backend sends composition metadata to Google Gemini by default; browser media
-files are never sent to the provider. Configure these environment variables
-environment variables before starting Django:
 
-```powershell
-$env:AI_API_KEY = "your-google-ai-studio-key"
-$env:AI_PROVIDER = "google" # optional; google is the default
-$env:AI_MODEL = "gemini-3.6-flash" # optional
-$env:AI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta" # optional
-```
+The React app calls `POST /api/ai/plan/` with natural-language goals and actual tool results from preceding execution rounds. The legacy `POST /api/ai/` endpoint remains available for older callers. The request includes:
 
-Google AI Studio does not require `AI_BASE_URL` for the default setup. To use
-an OpenAI-compatible provider instead, set `AI_PROVIDER` to `openai`, provide
-`AI_MODEL`, and set `AI_BASE_URL` to that provider's API root. For Groq:
+- the prompt from the user
+- current composition metadata
+- clip selection / timeline context
+- available asset descriptors
 
-```powershell
-$env:AI_PROVIDER = "openai"
-$env:GROQ_API_KEY = "your-groq-key" # or use AI_API_KEY
-$env:AI_MODEL = "openai/gpt-oss-20b"
-$env:AI_BASE_URL = "https://api.groq.com/openai/v1"
-```
+The backend validates the provider response and only returns a safe allowlist of supported frontend actions, including:
 
-The endpoint accepts a prompt, composition JSON, selected clip metadata, and
-asset descriptors. It returns only validated tools supported by the frontend:
-trimming, splitting, reordering, text changes, speed, volume, dimensions,
-and grayscale. It does not execute provider-generated code or use the legacy
-FFmpeg job pipeline.
+- trim
+- split
+- reorder
+- text edits
+- speed
+- volume
+- dimensions
+- grayscale
+- keep_clip_range
+- remove_clip_range
+- UI control actions such as `open_media_upload`, `open_recording_setup`, and `stop_recording`
+
+The frontend then applies the returned actions atomically to the composition state, preserving the browser preview, export pipeline, timeline state, and undo history.
+
+The app does not send raw uploaded media files to the AI provider. Only metadata and prompt context are transmitted.
 
 ## API endpoints
 
+### Core app endpoints
+
 | Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/jobs/` | List all compose jobs |
-| `POST` | `/api/jobs/` | Create a new compose job (multipart form) |
-| `GET` | `/api/jobs/{id}/` | Retrieve job status & output URL |
+| --- | --- | --- |
+| `GET` | `/api/ai/tools/` | Tool registry and configured availability |
+| `POST` | `/api/ai/plan/` | Plan the next supported tool calls |
+| `POST` | `/api/ai/` | Ask the AI agent for editing actions |
+| `GET` | `/admin/` | Django admin |
+
+### Legacy render queue
+
+| Method | Endpoint | Description |
+| --- | --- | --- |
+| `GET` | `/api/jobs/` | List composed jobs |
+| `POST` | `/api/jobs/` | Upload clips and queue a render |
+| `GET` | `/api/jobs/{id}/` | Read job status and output |
 | `DELETE` | `/api/jobs/{id}/` | Delete a job |
-| `GET` | `/admin/` | Django admin interface (if superuser created) |
 
-### POST `/api/jobs/` — form fields
+The legacy queue still exists for compatibility with the original FFmpeg-based flow, but the main editor now prefers client-side rendering and AI-generated editing actions.
 
-| Field | Type | Required | Default | Description |
-|---|---|---|---|---|
-| `clips` | File (multiple) | ✅ Yes | — | Image or video files to stitch |
-| `audio` | File | ❌ No | — | Optional background audio track |
-| `image_duration` | Integer | ❌ No | `3` | Seconds each image clip should display |
+## Run the project in development
 
-### Job statuses
+You need two terminals for the full stack:
 
-`pending` → `processing` → `completed` / `failed`
+### Terminal 1 — Django
 
-The frontend polls the job endpoint every 2 seconds while the job is pending or processing.
+```powershell
+cd video-composer-backend
+.\.venv\Scripts\Activate.ps1
+python manage.py runserver
+```
+
+### Terminal 2 — Celery
+
+```powershell
+cd video-composer-backend
+.\.venv\Scripts\Activate.ps1
+celery -A video_composer worker -l info
+```
+
+Make sure Redis is running before starting Celery.
 
 ## Project structure
 
-```
+```text
 video-composer-backend/
-├── composer/                    # Main Django app
-│   ├── migrations/              # DB schema migrations
-│   ├── services/
-│   │   ├── __init__.py
-│   │   └── ffmpeg_service.py    # VideoComposerService (FFmpeg logic)
+├── composer/
+│   ├── ai_agent.py              # AI provider integration and response validation
 │   ├── admin.py                 # Django admin registration
-│   ├── apps.py                  # App config
-│   ├── models.py                # ComposeJob & Clip models
-│   ├── serializers.py           # DRF serializers
-│   ├── tasks.py                 # Celery task (compose_job_task)
-│   ├── urls.py                  # API router (/api/jobs)
-│   └── views.py                 # ComposeJobViewSet
-├── media/                       # Uploaded & generated files
-│   ├── uploads/                 # Raw uploads
-│   ├── outputs/                 # Final rendered videos
-│   └── tmp/                     # Temp working files
-├── video_composer/              # Django project config
+│   ├── apps.py
+│   ├── models.py                # Legacy backend models
+│   ├── serializers.py
+│   ├── tasks.py                 # Celery tasks
+│   ├── urls.py                 # API routes
+│   ├── views.py                # API view logic
+│   └── services/
+│       └── ffmpeg_service.py   # Legacy FFmpeg-based render pipeline
+├── media/
+│   ├── uploads/
+│   ├── outputs/
+│   └── tmp/
+├── video_composer/
 │   ├── __init__.py
 │   ├── asgi.py
-│   ├── celery.py                # Celery app setup
-│   ├── settings.py              # Django settings
-│   ├── urls.py                  # Root URL config
+│   ├── celery.py
+│   ├── settings.py             # Django settings, env config, Celery broker settings
+│   ├── urls.py
 │   └── wsgi.py
-├── db.sqlite3                   # SQLite database (created after migrate)
-├── manage.py                    # Django CLI entry point
-└── requirements.txt             # Python dependencies
+├── .env.example                # Safe example environment template
+├── .env                        # Local secrets; git-ignored
+├── db.sqlite3
+├── manage.py
+├── requirements.txt
+└── README.md
+```
+
+## Notes for contributors
+
+- prefer editing `.env.example` when adding new environment variables
+- keep provider keys and secrets out of version control
+- the browser editor is the primary path for composition work; backend job processing remains optional/legacy
+- when changing AI tool support, update both the backend allowlist and the frontend command layer together
+
+## Useful links
+
+- Frontend app: `video-composer-frontend/`
+- Browser editor entry: `video-composer-frontend/src/App.jsx`
+- Shared editing command layer: `video-composer-frontend/src/state/editingCommands.js`
+- AI orchestration backend: `video-composer-backend/composer/ai_agent.py`
+- Django settings: `video-composer-backend/video_composer/settings.py`

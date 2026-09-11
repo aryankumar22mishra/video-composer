@@ -3,27 +3,14 @@ const MAX_SPEED = 8
 const MIN_DIMENSION = 2
 const MAX_DIMENSION = 7680
 
-export const SUPPORTED_EDITING_TOOLS = [
-  'trim_clip',
-  'split_clip',
-  'reorder_clips',
-  'update_text',
-  'add_text',
-  'set_speed',
-  'set_volume',
-  'set_dimensions',
-  'set_grayscale',
-  'remove_clip_range',
-  'keep_clip_range',
-  'open_recording_setup',
-  'stop_recording',
-  'open_media_upload',
-]
+import registry from '../agent/toolRegistry.json' with { type: 'json' }
+
+export const SUPPORTED_EDITING_TOOLS = registry.filter((tool) => ['edit', 'ui'].includes(tool.executor)).map((tool) => tool.name)
 
 function relayout(clips) {
   let runningTime = 0
   const relaid = clips.map((clip) => {
-    const duration = Math.max(MIN_CLIP_DURATION, Number(clip.duration) || MIN_CLIP_DURATION)
+    const duration = Number(clip.duration) > 0 ? Number(clip.duration) : MIN_CLIP_DURATION
     const updated = { ...clip, duration, startTime: runningTime }
     runningTime += duration
     return updated
@@ -56,9 +43,6 @@ function sourceStart(clip) {
   return Number(clip.sourceStart ?? clip.sourceOffset ?? 0)
 }
 
-function sourceDuration(clip) {
-  return Number(clip.sourceDuration ?? (clip.duration * (clip.speed || 1)))
-}
 
 function uniqueSegmentId(originalId, suffix) {
   return `${originalId}-${suffix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -117,8 +101,8 @@ function applyAction(composition, action, context) {
     const original = clips[index]
     const at = finiteNumber(action.at_seconds ?? action.position, 'split position')
     if (at <= 0 || at >= original.duration) throw new Error('Split position must be inside the selected clip.')
-    const first = { ...original, id: `${original.id}-a-${Date.now()}`, duration: at }
-    const second = { ...original, id: `${original.id}-b-${Date.now()}`, duration: original.duration - at }
+    const first = { ...original, id: uniqueSegmentId(original.id, 'a'), duration: at, sourceStart: sourceStart(original), sourceDuration: at * (original.speed || 1), baseDuration: at * (original.speed || 1) }
+    const second = { ...original, id: uniqueSegmentId(original.id, 'b'), duration: original.duration - at, sourceStart: sourceStart(original) + at * (original.speed || 1), sourceDuration: (original.duration - at) * (original.speed || 1), baseDuration: (original.duration - at) * (original.speed || 1) }
     clips.splice(index, 1, first, second)
   } else if (type === 'remove_clip_range') {
     const id = clipIdFor(action, context)
@@ -231,7 +215,7 @@ function applyAction(composition, action, context) {
     const id = clipIdFor(action, context)
     const speed = Math.min(MAX_SPEED, Math.max(0.1, finiteNumber(action.speed, 'speed')))
     clips = updateClip(clips, id, (clip) => {
-      const baseDuration = clip.baseDuration || clip.duration * (clip.speed || 1)
+      const baseDuration = clip.duration * (clip.speed || 1)
       return { ...clip, speed, baseDuration, duration: baseDuration / speed }
     })
   } else if (type === 'set_volume') {
