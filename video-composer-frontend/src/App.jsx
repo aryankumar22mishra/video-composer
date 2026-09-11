@@ -3,6 +3,7 @@ import './App.css'
 import { createComposition, createCompositionClip, COMPOSITION_DEFAULTS } from './state/composition'
 import { loadAssetMetadata, resolveVideoDuration, revokeObjectUrlAsset } from './assets/AssetManager'
 import { findActiveClip, drawFrame, seekAndDrawVideo, drawCompositionFrame, sourceTimeForClip } from './renderer/CompositionRenderer'
+import { zoomEffectsForTime } from './renderer/zoomEffect'
 import RecordModal from './recorder/RecordModal'
 import useScreenRecorder from './recorder/useScreenRecorder'
 import RecordingControls from './recorder/RecordingControls'
@@ -10,12 +11,26 @@ import RecordingReview from './recorder/RecordingReview'
 import DimensionsPopover from './components/DimensionsPopover'
 import Sidebar from './components/Sidebar'
 import AIChatPanel from './components/AIChatPanel'
+import ZoomPanel from './components/ZoomPanel'
 import { useClientExport, EXPORT_FORMATS } from './renderer/useClientExport'
 import { createCompositionText } from './state/composition'
 import { applyEditingActions, syncTimelineItems } from './state/editingCommands'
 import { toEvenDimension } from './dimensions/DimensionPresets'
 
 const API_BASE = '/api'
+
+// Default settings for the Zoom Fragment editor (see components/ZoomPanel).
+// focus is the draggable focus point as fractions of the frame (0..1).
+// clipId binds the effect to one timeline clip; null means "not attached".
+const DEFAULT_ZOOM_FRAGMENT = {
+  clipId: null,
+  clipFileName: '',
+  focus: { x: 0.5, y: 0.45 },
+  cameraMovement: false,
+  threeDEffect: false,
+  zoomLevel: 1.5,
+  transitionSpeed: 5,
+}
 
 const formatTime = (seconds) => {
   const safeSeconds = Math.max(0, Math.floor(seconds || 0))
@@ -112,6 +127,7 @@ function App() {
   const [selectedClipId, setSelectedClipId] = useState(null)
   const [activeTab, setActiveTab] = useState('videos')
   const [isMediaPanelCollapsed, setIsMediaPanelCollapsed] = useState(false)
+  const [zoomFragment, setZoomFragment] = useState({ ...DEFAULT_ZOOM_FRAGMENT })
   const [isExportPanelOpen, setIsExportPanelOpen] = useState(false)
   const [timelineItems, setTimelineItems] = useState([])
   const [selectedTextId, setSelectedTextId] = useState(null)
@@ -583,11 +599,11 @@ function App() {
       }
     }
 
-    drawCompositionFrame(ctx, canvas, composition, currentTime, {
+    drawCompositionFrame(ctx, canvas, { ...composition, zoomFragment }, currentTime, {
       images: previewImages,
       videos: previewVideos,
     })
-  }, [currentTime, composition, previewImages, previewVideos, clips, previewWidth, previewHeight, isPlaying])
+  }, [currentTime, composition, zoomFragment, previewImages, previewVideos, clips, previewWidth, previewHeight, isPlaying])
 
   // Drive the active clip hidden video element so its audio plays in sync
   // with the shared timeline clock. During playback only the active clip is
@@ -651,7 +667,9 @@ function App() {
     }
     setError('')
     return await clientExport.start({
-      composition,
+      // zoomFragment rides inside the composition so the exporter's shared
+      // render path applies the exact same zoom the user saw in preview.
+      composition: { ...composition, zoomFragment },
       clips,
       audioFile,
       mediaImages: { ...previewImages },
@@ -971,6 +989,37 @@ function App() {
     setIsExportPanelOpen(false)
     setIsRecorderSetupOpen(false)
     setIsMediaPanelCollapsed(false)
+  }
+
+  const handleSelectZoom = () => {
+    setActiveSection('zoom')
+    setIsExportPanelOpen(false)
+    setIsRecorderSetupOpen(false)
+    setIsMediaPanelCollapsed(false)
+    // Attach the fragment to the clip selected on the timeline (if any), so
+    // the effect targets exactly what the user is editing. Selecting another
+    // clip and reopening Zoom moves the fragment to that new clip.
+    if (selectedClipId) {
+      const bound = composition.tracks[0].clips.find((clip) => clip.id === selectedClipId)
+      if (bound) {
+        setZoomFragment((prev) => ({ ...prev, clipId: bound.id, clipFileName: bound.fileName }))
+      }
+    }
+  }
+
+  // ZoomPanel calls onChange with either a patch object or an updater
+  // function, so functional updates never hit stale captured state while
+  // the focus point is being dragged.
+  const updateZoomFragment = (patch) => {
+    setZoomFragment((prev) => ({ ...prev, ...(typeof patch === 'function' ? patch(prev) : patch) }))
+  }
+
+  const handleZoomBack = () => {
+    setActiveSection('media')
+  }
+
+  const handleDeleteZoomFragment = () => {
+    setZoomFragment({ ...DEFAULT_ZOOM_FRAGMENT, focus: { ...DEFAULT_ZOOM_FRAGMENT.focus } })
   }
 
   const undoLatestAIEdit = () => {
@@ -1295,6 +1344,20 @@ function App() {
         ? 'failed'
         : clientExport.status === 'cancelled' ? 'cancelled' : 'idle'
   const selectedClip = composition.tracks[0].clips.find((c) => c.id === selectedClipId)
+  // The Zoom Fragment panel treats the clip the fragment is bound to as its
+  // target (the panel's focus preview / fragment duration follow it). Falls
+  // back to the timeline selection while the fragment is unattached.
+  const zoomClip = zoomFragment.clipId
+    ? composition.tracks[0].clips.find((clip) => clip.id === zoomFragment.clipId)
+    : null
+  const zoomPanelClip = zoomClip || selectedClip
+  const zoomPanelPreview = zoomPanelClip ? clipPreviews[zoomPanelClip.fileIndex] : null
+  // Live zoom state at the playhead — drives the preview badge so it is
+  // obvious the fragment is being applied frame-by-frame.
+  const activeZoomClip = findActiveClip(composition, currentTime)
+  const activeZoom = (zoomFragment.clipId && activeZoomClip && zoomFragment.clipId === activeZoomClip.id)
+    ? zoomEffectsForTime(zoomFragment, activeZoomClip.startTime, activeZoomClip.duration, currentTime)
+    : null
   const durationByUid = new Map(
     composition.tracks[0].clips.map((clip) => [clip.id, clip.duration])
   )
@@ -1324,6 +1387,7 @@ function App() {
         onSelectRecord={handleSelectRecord}
         onSelectMedia={handleSelectMedia}
         onSelectBackground={handleSelectBackground}
+        onSelectZoom={handleSelectZoom}
         onSelectAgent={handleSelectAgent}
       />
       <main className="simple-app">
@@ -1345,7 +1409,18 @@ function App() {
           </button>
         </div>
 
-        {activeSection === 'agent' ? (
+        {activeSection === 'zoom' ? (
+          !isMediaPanelCollapsed && (
+            <ZoomPanel
+              fragment={zoomFragment}
+              onChange={updateZoomFragment}
+              onBack={handleZoomBack}
+              onDelete={handleDeleteZoomFragment}
+              selectedClip={zoomPanelClip}
+              previewUrl={zoomPanelPreview}
+            />
+          )
+        ) : activeSection === 'agent' ? (
           <AIChatPanel
             messages={aiMessages}
             onSend={handleSendAI}
@@ -1558,6 +1633,11 @@ function App() {
             height={previewHeight}
             className="canvas-preview"
           />
+          {activeZoom && (
+            <span className="zoom-preview-badge" role="status">
+              ZOOM {activeZoom.scale.toFixed(1)}&#215;
+            </span>
+          )}
           {selectedClip && (
             <>
               <button

@@ -51,6 +51,17 @@ function SidebarIcon({ name }) {
     )
   }
 
+  if (name === 'zoom') {
+    return (
+      <svg {...common}>
+        <circle cx="11" cy="11" r="6.5" />
+        <path d="M15.8 15.8 20 20" />
+        <path d="M8.5 11h5" />
+        <path d="M11 8.5v5" />
+      </svg>
+    )
+  }
+
   if (name === 'upload') {
     return (
       <svg {...common}>
@@ -73,10 +84,11 @@ function SidebarIcon({ name }) {
   return null
 }
 
-function Sidebar({ activeSection, onSelectComposer, onSelectRecord, onSelectMedia, onSelectBackground, onSelectAgent }) {
+function Sidebar({ activeSection, onSelectComposer, onSelectRecord, onSelectMedia, onSelectBackground, onSelectZoom, onSelectAgent }) {
   const items = [
     { key: 'media', label: 'My media', icon: 'upload', onClick: onSelectMedia },
     { key: 'background', label: 'Background', icon: 'background', onClick: onSelectBackground },
+    { key: 'zoom', label: 'Zoom', icon: 'zoom', onClick: onSelectZoom },
     { key: 'record', label: 'Record', icon: 'record', onClick: onSelectRecord },
     { key: 'agent', label: 'AI Agent', icon: 'agent', onClick: onSelectAgent },
     { key: 'composer', label: 'Export', icon: 'export', onClick: onSelectComposer },

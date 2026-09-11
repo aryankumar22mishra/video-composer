@@ -43,6 +43,16 @@ the existing preview, timeline, undo/redo, and browser export use the result.
 Configure `AI_API_KEY`, and optionally `AI_MODEL` and `AI_BASE_URL`, in the
 Django process environment as described in `video-composer-backend/README.md`.
 
+### Zoom Fragment
+
+Click **Zoom** (between Background and Record) to open the Zoom Fragment
+panel for the selected timeline clip. Drag the focus point on the preview,
+toggle Camera Movement / 3D Effect, and set the zoom level and transition
+speed. The effect is applied **live in the preview** — scrub or play the
+timeline to review it — and the exporter renders the exact same zoom, so
+what you preview is what downloads. The fragment stays attached to the clip
+it was opened for; selecting another clip and clicking Zoom moves it.
+
 Media files, composition state, and export object URLs are held in browser memory. Refreshing the page loses the current editing session; download the result before closing it.
 
 ### Screen recording

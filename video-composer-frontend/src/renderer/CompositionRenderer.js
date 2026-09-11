@@ -3,6 +3,8 @@
 // diverge from what the user sees on the canvas. Handles video clips, image
 // clips, and text overlays in one pass.
 
+import { zoomEffectsForTime } from './zoomEffect'
+
 const DEFAULT_TRANSFORM = { x: 0.5, y: 0.5, scale: 1, opacity: 1, rotation: 0 }
 
 export function findActiveClip(composition, time) {
@@ -22,7 +24,10 @@ export function findActiveTexts(composition, time) {
 // Draw a single media frame (video or image) onto the canvas with the
 // given transform. Letterbox-fits the media into the canvas (preserving
 // aspect ratio) and applies scale / position / opacity / rotation.
-export function drawFrame(ctx, canvas, image, transform = DEFAULT_TRANSFORM, grayscale = false) {
+// An optional `zoom` ({ scale, focusX, focusY, rotation }) applies the
+// Zoom Fragment effect on top: the frame magnifies toward the focus point
+// (the pivot), and any rotation orbits that point instead of the center.
+export function drawFrame(ctx, canvas, image, transform = DEFAULT_TRANSFORM, grayscale = false, zoom = null) {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, canvas.width, canvas.height)
@@ -46,18 +51,37 @@ export function drawFrame(ctx, canvas, image, transform = DEFAULT_TRANSFORM, gra
     baseWidth = canvas.height * imageRatio
   }
 
-  const drawWidth = baseWidth * t.scale
-  const drawHeight = baseHeight * t.scale
+  let drawWidth = baseWidth * t.scale
+  let drawHeight = baseHeight * t.scale
+  let centerX = canvas.width * t.x
+  let centerY = canvas.height * t.y
+  let pivotX = centerX
+  let pivotY = centerY
 
-  const centerX = canvas.width * t.x
-  const centerY = canvas.height * t.y
+  // Zoom fragment effect: magnify the frame toward the focus point. The
+  // pivot is the focus point's unzoomed screen position, so the zoomed
+  // image keeps that point pinned in place while everything else expands —
+  // which is also the anchor for the clip's own rotation (3D effect).
+  if (zoom && Number(zoom.scale) > 1.001) {
+    const focusX = Number(zoom.focusX ?? 0.5)
+    const focusY = Number(zoom.focusY ?? 0.5)
+    const zoomedWidth = drawWidth * zoom.scale
+    const zoomedHeight = drawHeight * zoom.scale
+    pivotX = centerX + (focusX - 0.5) * drawWidth
+    pivotY = centerY + (focusY - 0.5) * drawHeight
+    centerX = pivotX - (focusX - 0.5) * zoomedWidth
+    centerY = pivotY - (focusY - 0.5) * zoomedHeight
+    drawWidth = zoomedWidth
+    drawHeight = zoomedHeight
+  }
 
   ctx.save()
   if (grayscale) ctx.filter = 'grayscale(1)'
   ctx.globalAlpha = t.opacity
-  ctx.translate(centerX, centerY)
-  ctx.rotate((t.rotation * Math.PI) / 180)
-  ctx.drawImage(image, -drawWidth / 2, -drawHeight / 2, drawWidth, drawHeight)
+  ctx.translate(pivotX, pivotY)
+  ctx.rotate(((t.rotation + (zoom?.rotation || 0)) * Math.PI) / 180)
+  ctx.translate(-pivotX, -pivotY)
+  ctx.drawImage(image, centerX - drawWidth / 2, centerY - drawHeight / 2, drawWidth, drawHeight)
   ctx.restore()
 }
 
@@ -105,21 +129,29 @@ function drawTexts(ctx, canvas, composition, time) {
 export function drawCompositionFrame(ctx, canvas, composition, time, mediaSources = {}) {
   const activeClip = findActiveClip(composition, time)
 
+  // Zoom Fragment effect for the active clip (applies on top of the clip's
+  // own transform and grayscale). Bound by clipId so only the clip the user
+  // attached the fragment to is affected.
+  const zoomFragment = composition.zoomFragment
+  const zoom = zoomFragment && activeClip && zoomFragment.clipId === activeClip.id
+    ? zoomEffectsForTime(zoomFragment, activeClip.startTime, activeClip.duration, time)
+    : null
+
   if (activeClip) {
     const media = mediaSources[activeClip.fileType?.startsWith('image/') ? 'images' : 'videos']
     const source = media?.[activeClip.fileIndex]
 
     if (activeClip.fileType?.startsWith('image/')) {
       // Image clip — static, drawn directly.
-      drawFrame(ctx, canvas, source, activeClip.transform, activeClip.grayscale)
+      drawFrame(ctx, canvas, source, activeClip.transform, activeClip.grayscale, zoom)
     } else if (source) {
       // Video clip — draw its current frame. During live playback the source
       // element is already advancing; during export it's seeked frame-by-frame.
       if (source.readyState >= 2) {
-        drawFrame(ctx, canvas, source, activeClip.transform, activeClip.grayscale)
+        drawFrame(ctx, canvas, source, activeClip.transform, activeClip.grayscale, zoom)
       }
     } else {
-      drawFrame(ctx, canvas, null, activeClip.transform, activeClip.grayscale)
+      drawFrame(ctx, canvas, null, activeClip.transform, activeClip.grayscale, zoom)
     }
   } else {
     // No active clip — black frame.

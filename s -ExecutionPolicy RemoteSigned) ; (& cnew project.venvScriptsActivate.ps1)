@@ -1,0 +1,465 @@
+[1mdiff --git a/video-composer-frontend/fix_dup2.py b/video-composer-frontend/fix_dup2.py[m
+[1mdeleted file mode 100644[m
+[1mindex 1ea2b91..0000000[m
+[1m--- a/video-composer-frontend/fix_dup2.py[m
+[1m+++ /dev/null[m
+[36m@@ -1,24 +0,0 @@[m
+[31m-import codecs[m
+[31m-[m
+[31m-p = r'src/App.jsx'[m
+[31m-f = codecs.open(p, 'r', 'utf-8')[m
+[31m-lines = f.readlines()[m
+[31m-f.close()[m
+[31m-[m
+[31m-decls = [i for i, l in enumerate(lines) if l.strip() == 'const recorder = useScreenRecorder({ onCommit: commitRecording })'][m
+[31m-print(f"Found recorder decls at lines: {[i+1 for i in decls]}")[m
+[31m-[m
+[31m-if len(decls) == 2:[m
+[31m-    dup = decls[1][m
+[31m-    # Remove from the comment block start (4 lines before decl) through the decl[m
+[31m-    start = dup - 4[m
+[31m-    end = dup  # inclusive[m
+[31m-    print(f"Removing lines {start+1} to {end+1}")[m
+[31m-    del lines[start:end+1][m
+[31m-else:[m
+[31m-    print(f"ERROR: expected 2 decls, found {len(decls)}")[m
+[31m-[m
+[31m-f = codecs.open(p, 'w', 'utf-8')[m
+[31m-f.writelines(lines)[m
+[31m-f.close()[m
+[31m-print("DONE")[m
+\ No newline at end of file[m
+[1mdiff --git a/video-composer-frontend/src/App.css b/video-composer-frontend/src/App.css[m
+[1mindex 46f6223..1a6a42f 100644[m
+[1m--- a/video-composer-frontend/src/App.css[m
+[1m+++ b/video-composer-frontend/src/App.css[m
+[36m@@ -276,11 +276,11 @@[m [mh2 {[m
+ [m
+ .timeline-heading h2 { color: #f8fafc; }[m
+ .timeline-heading > span { font-variant-numeric: tabular-nums; }[m
+[31m-[m
+ .timeline-controls {[m
+[32m+[m[32m  position: relative;[m
+   display: flex;[m
+   align-items: center;[m
+[31m-  gap: 8px;[m
+[32m+[m[32m  min-height: 42px;[m
+   padding: 14px 0;[m
+ }[m
+ [m
+[36m@@ -293,6 +293,41 @@[m [mh2 {[m
+   font-size: 0.78rem;[m
+ }[m
+ [m
+[32m+[m[32m.playback-bar {[m
+[32m+[m[32m  position: absolute;[m
+[32m+[m[32m  left: 50%;[m
+[32m+[m[32m  top: 50%;[m
+[32m+[m[32m  transform: translate(-50%, -50%);[m
+[32m+[m
+[32m+[m[32m  display: flex;[m
+[32m+[m[32m  align-items: center;[m
+[32m+[m[32m  justify-content: center;[m
+[32m+[m[32m  gap: 8px;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.playback-play {[m
+[32m+[m[32m  width: 50px;[m
+[32m+[m[32m  height: 42px;[m
+[32m+[m
+[32m+[m[32m  display: flex;[m
+[32m+[m[32m  align-items: center;[m
+[32m+[m[32m  justify-content: center;[m
+[32m+[m
+[32m+[m[32m  padding: 0;[m
+[32m+[m[32m  border: 1px solid #35415c;[m
+[32m+[m[32m  border-radius: 8px;[m
+[32m+[m
+[32m+[m[32m  color: #171329;[m
+[32m+[m[32m  background: #c4b5fd;[m
+[32m+[m[32m  cursor: pointer;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.timeline-controls input {[m
+[32m+[m[32m  flex: 1;[m
+[32m+[m[32m  min-width: 80px;[m
+[32m+[m[32m  accent-color: #c084fc;[m
+[32m+[m[32m}[m
+[32m+[m
+ .timeline-controls .timeline-play { color: #171329; background: #c4b5fd; }[m
+ .timeline-controls input { flex: 1; min-width: 80px; accent-color: #c084fc; }[m
+ .timeline-scroll { overflow-x: auto; }[m
+[36m@@ -650,9 +685,11 @@[m [mh2 {[m
+ }[m
+ [m
+ .canvas-preview-wrapper {[m
+[31m-  margin-bottom: 12px;[m
+[31m-  width: 100%;[m
+[32m+[m[32m  margin: 0 auto 12px;[m
+   max-height: 280px;[m
+[32m+[m[32m  display: flex;[m
+[32m+[m[32m  align-items: center;[m
+[32m+[m[32m  justify-content: center;[m
+ }[m
+ [m
+ .canvas-preview {[m
+[36m@@ -663,13 +700,6 @@[m [mh2 {[m
+   background: #000;[m
+ }[m
+ [m
+[31m-.canvas-preview-label {[m
+[31m-  margin: 4px 0 0;[m
+[31m-  font-size: 0.7rem;[m
+[31m-  color: #64748b;[m
+[31m-  text-align: center;[m
+[31m-}[m
+[31m-[m
+ .download-link {[m
+   display: inline-block;[m
+   text-decoration: none;[m
+[36m@@ -2395,7 +2425,8 @@[m [mh2 {[m
+   top: calc(100% + 10px);[m
+   left: 0;[m
+   z-index: 45;[m
+[31m-  width: min(420px, 100%);[m
+[32m+[m[32m  width: 420px;[m
+[32m+[m[32m  max-width: calc(100vw - 48px);[m
+   padding: 12px 12px 10px;[m
+   border: 1px solid rgba(148, 163, 184, 0.2);[m
+   border-radius: 16px;[m
+[36m@@ -2515,3 +2546,122 @@[m [mh2 {[m
+     grid-column: 1 / -1;[m
+   }[m
+ }[m
+[32m+[m
+[32m+[m[32m.playback-bar {[m
+[32m+[m[32m  display: flex;[m
+[32m+[m[32m  align-items: center;[m
+[32m+[m[32m  gap: 14px;[m
+[32m+[m[32m  margin-left: auto;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.playback-time {[m
+[32m+[m[32m  color: #94a3b8;[m
+[32m+[m[32m  font-size: 0.8rem;[m
+[32m+[m[32m  font-variant-numeric: tabular-nums;[m
+[32m+[m[32m  min-width: 38px;[m
+[32m+[m[32m  text-align: center;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.playback-skip {[m
+[32m+[m[32m  display: flex;[m
+[32m+[m[32m  align-items: center;[m
+[32m+[m[32m  justify-content: center;[m
+[32m+[m[32m  width: 30px;[m
+[32m+[m[32m  height: 30px;[m
+[32m+[m[32m  border: none;[m
+[32m+[m[32m  border-radius: 50%;[m
+[32m+[m[32m  background: transparent;[m
+[32m+[m[32m  color: #94a3b8;[m
+[32m+[m[32m  cursor: pointer;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.playback-skip:hover {[m
+[32m+[m[32m  color: #f8fafc;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.playback-play {[m
+[32m+[m[32m  display: flex;[m
+[32m+[m[32m  align-items: center;[m
+[32m+[m[32m  justify-content: center;[m
+[32m+[m[32m  width: 42px;[m
+[32m+[m[32m  height: 42px;[m
+[32m+[m[32m  border: none;[m
+[32m+[m[32m  border-radius: 50%;[m
+[32m+[m[32m  background: #0f172a;[m
+[32m+[m[32m  color: #f8fafc;[m
+[32m+[m[32m  cursor: pointer;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.playback-play:hover {[m
+[32m+[m[32m  background: #1e293b;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.playback-play:disabled {[m
+[32m+[m[32m  opacity: 0.5;[m
+[32m+[m[32m  cursor: not-allowed;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/* --- Timeline scrubbing improvements --- */[m
+[32m+[m
+[32m+[m[32m/* Dynamic ruler: minor ticks between major labels */[m
+[32m+[m[32m.timeline-ruler-minor {[m
+[32m+[m[32m  position: absolute;[m
+[32m+[m[32m  top: 8px;[m
+[32m+[m[32m  width: 1px;[m
+[32m+[m[32m  height: 4px;[m
+[32m+[m[32m  background: #475569;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.timeline-ruler-major {[m
+[32m+[m[32m  position: absolute;[m
+[32m+[m[32m  top: 10px;[m
+[32m+[m[32m  transform: translateX(-50%);[m
+[32m+[m[32m  color: #64748b;[m
+[32m+[m[32m  font-size: 0.7rem;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/* Draggable playhead grabber: enlarged invisible hit area for easy grabbing */[m
+[32m+[m[32m.timeline-playhead-grabber {[m
+[32m+[m[32m  position: absolute;[m
+[32m+[m[32m  top: 0;[m
+[32m+[m[32m  bottom: 0;[m
+[32m+[m[32m  left: 0;[m
+[32m+[m[32m  width: 24px;[m
+[32m+[m[32m  transform: translateX(-50%);[m
+[32m+[m[32m  z-index: 3;[m
+[32m+[m[32m  cursor: grab;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m.timeline-playhead-grabber:active {[m
+[32m+[m[32m  cursor: grabbing;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/* Time bubble — appears while dragging the playhead */[m
+[32m+[m[32m.playhead-time-bubble {[m
+[32m+[m[32m  position: absolute;[m
+[32m+[m[32m  top: -26px;[m
+[32m+[m[32m  left: 50%;[m
+[32m+[m[32m  transform: translateX(-50%);[m
+[32m+[m[32m  padding: 3px 7px;[m
+[32m+[m[32m  border-radius: 4px;[m
+[32m+[m[32m  background: #0f172a;[m
+[32m+[m[32m  color: #f8fafc;[m
+[32m+[m[32m  font-size: 0.7rem;[m
+[32m+[m[32m  font-variant-numeric: tabular-nums;[m
+[32m+[m[32m  white-space: nowrap;[m
+[32m+[m[32m  pointer-events: none;[m
+[32m+[m[32m  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);[m
+[32m+[m[32m  border: 1px solid #33415c;[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m/* Arrow pointing down from the bubble to the playhead */[m
+[32m+[m[32m.playhead-time-bubble::after {[m
+[32m+[m[32m  content: '';[m
+[32m+[m[32m  position: absolute;[m
+[32m+[m[32m  top: 100%;[m
+[32m+[m[32m  left: 50%;[m
+[32m+[m[32m  transform: translateX(-50%);[m
+[32m+[m[32m  border-width: 5px;[m
+[32m+[m[32m  border-style: solid;[m
+[32m+[m[32m  border-color: #0f172a transparent transparent transparent;[m
+[32m+[m[32m}[m
+\ No newline at end of file[m
+[1mdiff --git a/video-composer-frontend/src/App.jsx b/video-composer-frontend/src/App.jsx[m
+[1mindex da4c238..d9907ba 100644[m
+[1m--- a/video-composer-frontend/src/App.jsx[m
+[1m+++ b/video-composer-frontend/src/App.jsx[m
+[36m@@ -1,4 +1,4 @@[m
+[31m-import { useEffect, useRef, useState } from 'react'[m
+[32m+[m[32m﻿import { useEffect, useRef, useState } from 'react'[m
+ import './App.css'[m
+ import { createComposition, createCompositionClip, COMPOSITION_DEFAULTS } from './state/composition'[m
+ import { loadAssetMetadata, resolveVideoDuration, revokeObjectUrlAsset } from './assets/AssetManager'[m
+[36m@@ -18,6 +18,45 @@[m [mconst formatTime = (seconds) => {[m
+   return `${Math.floor(safeSeconds / 60)}:${String(safeSeconds % 60).padStart(2, '0')}`[m
+ }[m
+ [m
+[32m+[m[32m// Like formatTime but with centisecond precision for the drag time bubble.[m
+[32m+[m[32mconst formatTimePrecise = (seconds) => {[m
+[32m+[m[32m  const s = Math.max(0, seconds || 0)[m
+[32m+[m[32m  const mins = Math.floor(s / 60)[m
+[32m+[m[32m  const secs = (s % 60).toFixed(2).padStart(5, '0')[m
+[32m+[m[32m  return `${mins}:${secs}`[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m// Dynamically generated ruler marks that adapt to totalDuration + zoom so[m
+[32m+[m[32m// labels are never overcrowded or too sparse. Returns major (with labels)[m
+[32m+[m[32m// and minor (sub-tick) marks. `position` is the pixel offset = time * scale.[m
+[32m+[m[32mconst generateRulerMarks = (duration, scale) => {[m
+[32m+[m[32m  if (!duration || duration <= 0 || !scale) return { major: [], minor: [] }[m
+[32m+[m[32m  const steps = [1, 2, 5, 10, 15, 30, 60, 120][m
+[32m+[m[32m  const targetLabels = 7[m
+[32m+[m[32m  const rawStep = duration / targetLabels[m
+[32m+[m[32m  let step = steps[steps.length - 1][m
+[32m+[m[32m  for (const s of steps) {[m
+[32m+[m[32m    if (s >= rawStep) { step = s; break }[m
+[32m+[m[32m  }[m
+[32m+[m[32m  const minorDivisions = step <= 1 ? 1 : (step <= 5 ? step : 5)[m
+[32m+[m[32m  const major = [][m
+[32m+[m[32m  const minor = [][m
+[32m+[m[32m  for (let t = 0; t <= duration + 0.001; t += step) {[m
+[32m+[m[32m    const time = Math.round(t)[m
+[32m+[m[32m    major.push({ time, position: time * scale })[m
+[32m+[m[32m    if (minorDivisions > 1) {[m
+[32m+[m[32m      const minorStep = step / minorDivisions[m
+[32m+[m[32m      for (let m = 1; m < minorDivisions; m++) {[m
+[32m+[m[32m        const minorTime = Math.round((t + m * minorStep) * 100) / 100[m
+[32m+[m[32m        if (minorTime < duration) {[m
+[32m+[m[32m          minor.push({ time: minorTime, position: minorTime * scale })[m
+[32m+[m[32m        }[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m[32m  return { major, minor }[m
+[32m+[m[32m}[m
+[32m+[m
+ function App() {[m
+   const [clips, setClips] = useState([])[m
+   const [audioFile, setAudioFile] = useState(null)[m
+[36m@@ -27,7 +66,7 @@[m [mfunction App() {[m
+   const [job, setJob] = useState(null)[m
+   const [currentTime, setCurrentTime] = useState(0)[m
+   const [isPlaying, setIsPlaying] = useState(false)[m
+[31m-  const [zoom, setZoom] = useState(48)[m
+[32m+[m[32m  const [zoom, _setZoom] = useState(48) // zoom level still drives the timeline ruler/width; +/- buttons removed intentionally[m
+   const [duration, setDuration] = useState(0)[m
+   const [clipPreviews, setClipPreviews] = useState([])[m
+   const [selectedClipId, setSelectedClipId] = useState(null)[m
+[36m@@ -132,10 +171,10 @@[m [mfunction App() {[m
+   const hiddenVideoRefs = useRef({})[m
+   const canvasRef = useRef(null)[m
+   const uploadInputRef = useRef(null)[m
+[31m-[m
+[31m-  // Active section for the OpenVid-style left sidebar navigation.[m
+[31m-  // "composer" → existing editor view, "record" → RecordModal is opened.[m
+[31m-  const [activeSection, setActiveSection] = useState('composer')[m
+[32m+[m[32m  const timelineCanvasRef = useRef(null)[m
+[32m+[m[32m  const wasDraggingRef = useRef(false)[m
+[32m+[m[32m  const isDraggingPlayheadRef = useRef(false)[m
+[32m+[m[32m  const [isDraggingPlayhead, setIsDraggingPlayhead] = useState(false)[m
+ [m
+   const compositionVideoDuration = composition.tracks[0].clips.reduce([m
+     (sum, clip) => sum + clip.duration,[m
+[36m@@ -486,10 +525,58 @@[m [mfunction App() {[m
+   }[m
+ [m
+   const handleTimelineClick = (event) => {[m
+[32m+[m[32m    if (wasDraggingRef.current) {[m
+[32m+[m[32m      wasDraggingRef.current = false[m
+[32m+[m[32m      return[m
+[32m+[m[32m    }[m
+     const bounds = event.currentTarget.getBoundingClientRect()[m
+     seekTo(((event.clientX - bounds.left) / bounds.width) * totalDuration)[m
+   }[m
+ [m
+[32m+[m[32m  // --- Draggable playhead (pointer events) ---[m
+[32m+[m[32m  // Reuses the same geometry math as handleTimelineClick for consistency.[m
+[32m+[m[32m  const seekFromEvent = (event, target) => {[m
+[32m+[m[32m    const bounds = target.getBoundingClientRect()[m
+[32m+[m[32m    const clampedX = Math.max(0, Math.min(event.clientX - bounds.left, bounds.width))[m
+[32m+[m[32m    const fraction = bounds.width > 0 ? clampedX / bounds.width : 0[m
+[32m+[m[32m    seekTo(fraction * totalDuration)[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  const handlePlayheadPointerDown = (event) => {[m
+[32m+[m[32m    if (!timelineCanvasRef.current || !totalDuration) return[m
+[32m+[m[32m    event.preventDefault()[m
+[32m+[m[32m    wasDraggingRef.current = true[m
+[32m+[m[32m    isDraggingPlayheadRef.current = true[m
+[32m+[m[32m    setIsDraggingPlayhead(true)[m
+[32m+[m[32m    seekFromEvent(event, timelineCanvasRef.current)[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  const handlePlayheadPointerMove = (event) => {[m
+[32m+[m[32m    if (isDraggingPlayheadRef.current && timelineCanvasRef.current) {[m
+[32m+[m[32m      seekFromEvent(event, timelineCanvasRef.current)[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  const handlePlayheadPointerUp = () => {[m
+[32m+[m[32m    isDraggingPlayheadRef.current = false[m
+[32m+[m[32m    setIsDraggingPlayhead(false)[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  // Attach document-level move/up listeners during drag for robust[m
+[32m+[m[32m  // pointer capture (handles dragging outside the timeline element).[m
+[32m+[m[32m  useEffect(() => {[m
+[32m+[m[32m    if (isDraggingPlayhead) {[m
+[32m+[m[32m      document.addEventListener('pointermove', handlePlayheadPointerMove)[m
+[32m+[m[32m      document.addEventListener('pointerup', handlePlayheadPointerUp)[m
+[32m+[m[32m      document.addEventListener('pointercancel', handlePlayheadPointerUp)[m
+[32m+[m[32m      return () => {[m
+[32m+[m[32m        document.removeEventListener('pointermove', handlePlayheadPointerMove)[m
+[32m+[m[32m        document.removeEventListener('pointerup', handlePlayheadPointerUp)[m
+[32m+[m[32m        document.removeEventListener('pointercancel', handlePlayheadPointerUp)[m
+[32m+[m[32m      }[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }, [isDraggingPlayhead])[m
+[32m+[m
+   const handleVideoMetadata = (event) => {[m
+     setDuration(event.currentTarget.duration)[m
+     setCurrentTime(event.currentTarget.currentTime)[m
+[36m@@ -507,6 +594,14 @@[m [mfunction App() {[m
+     setIsPlaying((prev) => !prev)[m
+   }[m
+ [m
+[32m+[m[32m  const skipBackward = () => {[m
+[32m+[m[32m    seekTo(Math.max(0, currentTime - 5))[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  const skipForward = () => {[m
+[32m+[m[32m    seekTo(Math.min(totalDuration, currentTime + 5))[m
+[32m+[m[32m  }[m
+[32m+[m
+   const removeClip = (index) => {[m
+     setClips((prev) => prev.filter((_, i) => i !== index))[m
+     setTimelineItems((prev) =>[m
+[36m@@ -933,7 +1028,7 @@[m [mfunction App() {[m
+             height={previewHeight}[m
+             className="canvas-preview"[m
+           />[m
+[31m-          <p className="canvas-preview-label">Live preview &middot; {composition.width}&times;{composition.height}</p>[m
+[32m+[m[41m          [m
+         </div>[m
+ [m
+         {job?.error_message && <p className="message error">{job.error_message}</p>}[m
+[36m@@ -1022,16 +1117,49 @@[m [mfunction App() {[m
+                 )}[m
+               </div>[m
+ [m
+[31m-              <button type="button" className="timeline-play" onClick={handleTogglePlayback} disabled={!timelineItems.length}>{isPlaying ? 'Pause' : 'Play'}</button>[m
+[31m-              <button type="button" onClick={() => seekTo(0)}>Start</button>[m
+[31m-              <input type="range" min="0" max={totalDuration || 1} step="0.1" value={currentTime} onChange={(event) => seekTo(Number(event.target.value))} aria-label="Timeline position" />[m
+[31m-              <button type="button" onClick={() => setZoom((value) => Math.max(24, value - 8))}>−</button>[m
+[31m-              <button type="button" onClick={() => setZoom((value) => Math.min(96, value + 8))}>+</button>[m
+[32m+[m[32m              <div className="playback-bar">[m
+[32m+[m[32m                <span className="playback-time">{formatTime(currentTime)}</span>[m
+[32m+[m
+[32m+[m[32m                <button type="button" className="playback-skip" onClick={skipBackward} aria-label="Back 5 seconds">[m
+[32m+[m[32m                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">[m
+[32m+[m[32m                    <path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6" />[m
+[32m+[m[32m                  </svg>[m
+[32m+[m[32m                </button>[m
+[32m+[m
+[32m+[m[32m                <button[m
+[32m+[m[32m                  type="button"[m
+[32m+[m[32m                  className="playback-play"[m
+[32m+[m[32m                  onClick={handleTogglePlayback}[m
+[32m+[m[32m                  disabled={!timelineItems.length}[m
+[32m+[m[32m                  aria-label={isPlaying ? 'Pause' : 'Play'}[m
+[32m+[m[32m                >[m
+[32m+[m[32m                  {isPlaying ? ([m
+[32m+[m[32m                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" /><rect x="14" y="5" width="4" height="14" /></svg>[m
+[32m+[m[32m                  ) : ([m
+[32m+[m[32m                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>[m
+[32m+[m[32m                  )}[m
+[32m+[m[32m                </button>[m
+[32m+[m
+[32m+[m[32m                <button type="button" className="playback-skip" onClick={skipForward} aria-label="Forward 5 seconds">[m
+[32m+[m[32m                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">[m
+[32m+[m[32m                    <path d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6" />[m
+[32m+[m[32m                  </svg>[m
+[32m+[m[32m                </button>[m
+[32m+[m
+[32m+[m[32m                <span className="playback-time">{formatTime(totalDuration)}</span>[m
+[32m+[m[32m              </div>[m
+             </div>[m
+ [m
+             <div className="timeline-scroll">[m
+[31m-              <div className="timeline-canvas" style={{ width: `${timelineWidth}px` }} onClick={handleTimelineClick}>[m
+[31m-                <div className="timeline-ruler"><span />{Array.from({ length: Math.max(2, Math.ceil(totalDuration) + 1) }, (_, index) => <span key={index} style={{ left: `${index * zoom}px` }}>{formatTime(index)}</span>)}</div>[m
+[32m+[m[32m              <div className="timeline-canvas" ref={timelineCanvasRef} style={{ width: `${timelineWidth}px` }} onClick={handleTimelineClick}>[m
+[32m+[m[32m                <div className="timeline-ruler">[m
+[32m+[m[32m                  {generateRulerMarks(totalDuration, zoom).minor.map((tick, i) => ([m
+[32m+[m[32m                    <span key={`minor-${i}`} className="timeline-ruler-minor" style={{ left: `${tick.pos
