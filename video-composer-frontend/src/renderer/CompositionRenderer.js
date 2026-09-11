@@ -22,7 +22,7 @@ export function findActiveTexts(composition, time) {
 // Draw a single media frame (video or image) onto the canvas with the
 // given transform. Letterbox-fits the media into the canvas (preserving
 // aspect ratio) and applies scale / position / opacity / rotation.
-export function drawFrame(ctx, canvas, image, transform = DEFAULT_TRANSFORM) {
+export function drawFrame(ctx, canvas, image, transform = DEFAULT_TRANSFORM, grayscale = false) {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   ctx.fillStyle = '#000'
   ctx.fillRect(0, 0, canvas.width, canvas.height)
@@ -53,6 +53,7 @@ export function drawFrame(ctx, canvas, image, transform = DEFAULT_TRANSFORM) {
   const centerY = canvas.height * t.y
 
   ctx.save()
+  if (grayscale) ctx.filter = 'grayscale(1)'
   ctx.globalAlpha = t.opacity
   ctx.translate(centerX, centerY)
   ctx.rotate((t.rotation * Math.PI) / 180)
@@ -110,15 +111,15 @@ export function drawCompositionFrame(ctx, canvas, composition, time, mediaSource
 
     if (activeClip.fileType?.startsWith('image/')) {
       // Image clip — static, drawn directly.
-      drawFrame(ctx, canvas, source, activeClip.transform)
+      drawFrame(ctx, canvas, source, activeClip.transform, activeClip.grayscale)
     } else if (source) {
       // Video clip — draw its current frame. During live playback the source
       // element is already advancing; during export it's seeked frame-by-frame.
       if (source.readyState >= 2) {
-        drawFrame(ctx, canvas, source, activeClip.transform)
+        drawFrame(ctx, canvas, source, activeClip.transform, activeClip.grayscale)
       }
     } else {
-      drawFrame(ctx, canvas, null, activeClip.transform)
+      drawFrame(ctx, canvas, null, activeClip.transform, activeClip.grayscale)
     }
   } else {
     // No active clip — black frame.
@@ -149,4 +150,10 @@ export function seekAndDrawVideo(video, ctx, canvas, timeWithinClip, transform) 
   }
   video.addEventListener('seeked', onSeeked)
   video.currentTime = timeWithinClip
+}
+
+export function sourceTimeForClip(clip, timelineTime) {
+  const speed = clip.speed || 1
+  const sourceStart = Number(clip.sourceStart ?? clip.sourceOffset ?? 0)
+  return Math.max(0, sourceStart + (timelineTime - clip.startTime) * speed)
 }

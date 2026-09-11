@@ -2,7 +2,7 @@
 
 A React video editor for combining images, videos, screen recordings, background audio, and basic text overlays. The current editor previews compositions on Canvas and exports MP4 or WebM directly in the browser.
 
-The repository also includes a Django API for storing project metadata and exported files, plus a legacy FFmpeg rendering queue. The editor currently uses browser memory and client-side export; project save/load is not wired into the UI. Despite the project name and AI Studio branding, no AI generation service is integrated.
+The repository also includes a Django API for storing project metadata and exported files, plus a legacy FFmpeg rendering queue. The editor currently uses browser memory and client-side export; project save/load is not wired into the UI. The AI Agent uses a backend provider endpoint for structured editing actions while keeping source media in the browser.
 
 ## Quick start
 
@@ -30,6 +30,18 @@ Requirements:
 4. Use **Add text** on the TEXT track to insert a centered, three-second placeholder overlay at the playhead. Text content and styling controls are not currently exposed in the UI.
 5. Open the dimensions control beside the preview transport to choose an output preset or custom size.
 6. Click **Export** in the left navigation. The export panel shows progress and a cancel action, then WebM and MP4 download buttons. Requesting a different format starts another render when needed.
+
+### AI Agent
+
+Click **AI Agent** between Record and Export to open a persistent chat panel.
+Prompts can be typed or dictated; speech transcripts remain editable before
+sending. The backend receives only the prompt, composition metadata, selected
+clip metadata, and asset descriptors. It returns a validated list of supported
+editing tools: trim, split, reorder, text editing, speed, volume, dimensions,
+and grayscale. The React command layer applies each response atomically, so
+the existing preview, timeline, undo/redo, and browser export use the result.
+Configure `AI_API_KEY`, and optionally `AI_MODEL` and `AI_BASE_URL`, in the
+Django process environment as described in `video-composer-backend/README.md`.
 
 Media files, composition state, and export object URLs are held in browser memory. Refreshing the page loses the current editing session; download the result before closing it.
 

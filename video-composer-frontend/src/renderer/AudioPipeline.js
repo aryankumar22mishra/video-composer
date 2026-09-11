@@ -59,7 +59,7 @@ export async function buildMixedAudioBuffer({
   let scheduled = 0
   const report = (stage) => { if (onProgress) { try { onProgress(stage) } catch { /* noop */ } } }
 
-  const scheduleBuffer = (buffer, { startTime, wallDuration, speed = 1, offset = 0 }) => {
+  const scheduleBuffer = (buffer, { startTime, wallDuration, speed = 1, offset = 0, volume = 1 }) => {
     if (!buffer || wallDuration <= 0) return
     const available = Math.max(0, buffer.duration - offset)
     if (available <= 0) return
@@ -67,9 +67,12 @@ export async function buildMixedAudioBuffer({
     // the wall-clock play length is duration / playbackRate.
     const sourceDuration = Math.min(available, wallDuration * speed)
     const source = ctx.createBufferSource()
+    const gain = ctx.createGain()
     source.buffer = buffer
     source.playbackRate.value = speed
-    source.connect(ctx.destination)
+    gain.gain.value = Math.max(0, Math.min(1, volume))
+    source.connect(gain)
+    gain.connect(ctx.destination)
     source.start(startTime, offset, sourceDuration)
     scheduled += 1
   }
@@ -88,7 +91,8 @@ export async function buildMixedAudioBuffer({
         startTime: clip.startTime,
         wallDuration: clip.duration,
         speed: clip.speed || 1,
-        offset: 0, // clips always play from their source head in this app
+        volume: clip.volume ?? 1,
+        offset: Number(clip.sourceStart ?? clip.sourceOffset ?? 0),
       })
     } catch {
       // No decodable audio in this clip — silence for its span.

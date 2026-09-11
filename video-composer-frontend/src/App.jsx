@@ -2,15 +2,17 @@
 import './App.css'
 import { createComposition, createCompositionClip, COMPOSITION_DEFAULTS } from './state/composition'
 import { loadAssetMetadata, resolveVideoDuration, revokeObjectUrlAsset } from './assets/AssetManager'
-import { findActiveClip, drawFrame, seekAndDrawVideo, drawCompositionFrame } from './renderer/CompositionRenderer'
+import { findActiveClip, drawFrame, seekAndDrawVideo, drawCompositionFrame, sourceTimeForClip } from './renderer/CompositionRenderer'
 import RecordModal from './recorder/RecordModal'
 import useScreenRecorder from './recorder/useScreenRecorder'
 import RecordingControls from './recorder/RecordingControls'
 import RecordingReview from './recorder/RecordingReview'
 import DimensionsPopover from './components/DimensionsPopover'
 import Sidebar from './components/Sidebar'
+import AIChatPanel from './components/AIChatPanel'
 import { useClientExport, EXPORT_FORMATS } from './renderer/useClientExport'
 import { createCompositionText } from './state/composition'
+import { applyEditingActions, syncTimelineItems } from './state/editingCommands'
 import { toEvenDimension } from './dimensions/DimensionPresets'
 
 const API_BASE = '/api'
@@ -154,6 +156,8 @@ function App() {
     history.restoring = true
     history.last = JSON.stringify(previous)
     setComposition(previous)
+    setTimelineItems(syncTimelineItems(timelineItems, previous))
+    return previous
   }
 
   const redoComposition = () => {
@@ -255,10 +259,26 @@ function App() {
   const hiddenVideoRefs = useRef({})
   const canvasRef = useRef(null)
   const uploadInputRef = useRef(null)
+  const audioInputRef = useRef(null)
 
   // Active section for the OpenVid-style left sidebar navigation.
   // "composer" → existing editor view, "record" → RecordModal is opened.
   const [activeSection, setActiveSection] = useState('media')
+  const [aiMessages, setAiMessages] = useState([])
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState('')
+  const [aiPendingClarification, setAiPendingClarification] = useState(null)
+  const [aiLastEditedTarget, setAiLastEditedTarget] = useState(null)
+  const [aiLastResult, setAiLastResult] = useState(null)
+  const [aiFailedPrompt, setAiFailedPrompt] = useState('')
+  const aiRequestRef = useRef(0)
+  const aiInFlightKeyRef = useRef(null)
+  const aiUndoRef = useRef(null)
+  const compositionRef = useRef(composition)
+
+  useEffect(() => {
+    compositionRef.current = composition
+  }, [composition])
 
   const compositionVideoDuration = composition.tracks[0].clips.reduce(
     (sum, clip) => sum + clip.duration,
@@ -555,8 +575,7 @@ function App() {
       if (scrubClip?.fileType?.startsWith('video/')) {
         const video = previewVideos[scrubClip.fileIndex]
         if (video) {
-          const speed = scrubClip.speed || 1
-          const sourceTime = (currentTime - scrubClip.startTime) * speed
+          const sourceTime = sourceTimeForClip(scrubClip, currentTime)
           if (Math.abs(video.currentTime - sourceTime) > 0.05) {
             video.currentTime = sourceTime
           }
@@ -582,8 +601,7 @@ function App() {
       if (!video) return
       const isActive = activeClip && Number(activeClip.fileIndex) === Number(index)
       if (isActive && isPlaying) {
-        const speed = activeClip.speed || 1
-        const sourceTime = (currentTime - activeClip.startTime) * speed
+        const sourceTime = sourceTimeForClip(activeClip, currentTime)
         video.muted = false
         if (Math.abs(video.currentTime - sourceTime) > 0.3) { video.currentTime = sourceTime }
         video.play().catch(() => {})
@@ -937,6 +955,135 @@ function App() {
     setIsMediaPanelCollapsed(false)
   }
 
+  const handleSelectBackground = () => {
+    setActiveSection('background')
+    setIsExportPanelOpen(false)
+    setIsRecorderSetupOpen(false)
+    setIsMediaPanelCollapsed(false)
+    setActiveTab('upload')
+    requestAnimationFrame(() => {
+      audioInputRef.current?.click()
+    })
+  }
+
+  const handleSelectAgent = () => {
+    setActiveSection('agent')
+    setIsExportPanelOpen(false)
+    setIsRecorderSetupOpen(false)
+    setIsMediaPanelCollapsed(false)
+  }
+
+  const undoLatestAIEdit = () => {
+    const undo = aiUndoRef.current
+    if (!undo || JSON.stringify(compositionRef.current) !== undo.after) {
+      setAiError('The latest AI edit is no longer the current edit, so it cannot be undone here.')
+      return false
+    }
+    const previous = undoComposition()
+    if (!previous) {
+      setAiError('There is no AI edit available to undo.')
+      return false
+    }
+    compositionRef.current = previous
+    aiUndoRef.current = null
+    setAiLastResult(null)
+    setAiMessages((messages) => [...messages, { id: `${Date.now()}-undo`, role: 'assistant', content: 'Undid the last AI edit.' }])
+    return true
+  }
+
+  const handleSendAI = async (prompt) => {
+    const cleanPrompt = prompt.trim()
+    if (!cleanPrompt) return
+    if (/^undo(?: the)? last edit[.!]?$/i.test(cleanPrompt)) {
+      undoLatestAIEdit()
+      return
+    }
+    const snapshot = JSON.stringify(compositionRef.current)
+    const requestKey = `${cleanPrompt.toLowerCase()}::${snapshot}`
+    if (aiInFlightKeyRef.current === requestKey) return
+    const requestId = aiRequestRef.current + 1
+    aiRequestRef.current = requestId
+    aiInFlightKeyRef.current = requestKey
+    const userMessage = { id: `${Date.now()}-user-${requestId}`, role: 'user', content: cleanPrompt }
+    const recentHistory = [...aiMessages, userMessage].slice(-12).map(({ role, content }) => ({ role, content }))
+    setAiMessages((previous) => [...previous, userMessage])
+    setAiLoading(true)
+    setAiError('')
+    setAiFailedPrompt('')
+    const selected = compositionRef.current.tracks[0].clips.find((clip) => clip.id === selectedClipId)
+    const assets = clips.map((file, index) => ({ id: String(index), name: file.name, type: file.type, size: file.size }))
+
+    try {
+      const response = await fetch(`${API_BASE}/ai/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: cleanPrompt,
+          composition: compositionRef.current,
+          selected_clip: selected || null,
+          assets,
+          history: recentHistory,
+          pending_clarification: aiPendingClarification?.question || null,
+          last_edited_target: aiLastEditedTarget,
+          recording_state: recorder.recordingState,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.detail || 'AI Agent request failed.')
+      if (requestId !== aiRequestRef.current || JSON.stringify(compositionRef.current) !== snapshot) {
+        throw new Error('The composition changed while the AI was working. Please send the request again.')
+      }
+      if (payload.clarification) {
+        setAiPendingClarification({ question: payload.clarification, prompt: cleanPrompt })
+        setAiMessages((previous) => [...previous, { id: `${Date.now()}-assistant-${requestId}`, role: 'assistant', content: payload.clarification }])
+        return
+      }
+      if (!Array.isArray(payload.actions) || payload.actions.length === 0) {
+        setAiMessages((previous) => [...previous, { id: `${Date.now()}-assistant-${requestId}`, role: 'assistant', content: payload.summary || 'No edit was applied.' }])
+        setAiPendingClarification(null)
+        return
+      }
+      const result = applyEditingActions(compositionRef.current, payload.actions, {
+        selectedClipId,
+        selectedTextId,
+        lastEditedTarget: aiLastEditedTarget,
+        recordingState: recorder.recordingState,
+        openRecordingSetup: handleSelectRecord,
+        stopRecording: recorder.stopRecording,
+        openMediaUpload: handleSelectUpload,
+      })
+      const compositionChanged = JSON.stringify(result.composition) !== snapshot
+      setComposition(result.composition)
+      compositionRef.current = result.composition
+      setTimelineItems(syncTimelineItems(timelineItems, result.composition))
+      if (compositionChanged) {
+        aiUndoRef.current = { before: snapshot, after: JSON.stringify(result.composition) }
+        setAiLastEditedTarget(result.lastEditedTarget)
+      } else {
+        aiUndoRef.current = null
+      }
+      setAiPendingClarification(null)
+      setAiLastResult(compositionChanged ? result.summaries.join(' ') : null)
+      setAiMessages((previous) => [...previous, {
+        id: `${Date.now()}-assistant-${requestId}`,
+        role: 'assistant',
+        content: compositionChanged
+          ? (result.summaries.join(' ') || payload.summary || `Applied ${result.summaries.length} edit${result.summaries.length === 1 ? '' : 's'}.`)
+          : 'No composition change was needed.',
+      }])
+    } catch (requestError) {
+      if (requestId === aiRequestRef.current) {
+        setAiError(requestError.message || 'AI Agent request failed.')
+        setAiFailedPrompt(cleanPrompt)
+      }
+    } finally {
+      if (requestId === aiRequestRef.current) {
+        setAiLoading(false)
+        aiInFlightKeyRef.current = null
+      }
+    }
+  }
+
   const handleSelectUpload = () => {
     setActiveSection('media')
     setIsExportPanelOpen(false)
@@ -1176,6 +1323,8 @@ function App() {
         onSelectComposer={handleSelectComposer}
         onSelectRecord={handleSelectRecord}
         onSelectMedia={handleSelectMedia}
+        onSelectBackground={handleSelectBackground}
+        onSelectAgent={handleSelectAgent}
       />
       <main className="simple-app">
       <section className={isMediaPanelCollapsed ? 'simple-card sidebar-card is-collapsed' : 'simple-card sidebar-card'}>
@@ -1196,7 +1345,20 @@ function App() {
           </button>
         </div>
 
-        {!isMediaPanelCollapsed && !isExportPanelOpen && (
+        {activeSection === 'agent' ? (
+          <AIChatPanel
+            messages={aiMessages}
+            onSend={handleSendAI}
+            loading={aiLoading}
+            error={aiError}
+            selectedClip={selectedClip}
+            assets={clips}
+            lastResult={aiLastResult}
+            onUndo={undoLatestAIEdit}
+            failedPrompt={aiFailedPrompt}
+            onRetry={handleSendAI}
+          />
+        ) : !isMediaPanelCollapsed && !isExportPanelOpen && (
           <>
             <div className="sidebar-tabs" role="tablist" aria-label="Media types">
               <button
@@ -1308,9 +1470,14 @@ function App() {
               <label className="field">
                 <span>Optional audio</span>
                 <input
+                    ref={audioInputRef}
                   type="file"
                   accept="audio/*"
-                  onChange={(event) => setAudioFile(event.target.files?.[0] || null)}
+                    onChange={(event) => {
+                      setAudioFile(event.target.files?.[0] || null)
+                      setActiveTab('audio')
+                      event.target.value = ''
+                    }}
                 />
               </label>
 

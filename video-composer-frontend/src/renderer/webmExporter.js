@@ -7,7 +7,7 @@
 // Keep this tab foregrounded while exporting — background tabs throttle
 // requestAnimationFrame, which would freeze exported frames.
 
-import { drawCompositionFrame, findActiveClip } from './CompositionRenderer'
+import { drawCompositionFrame, findActiveClip, sourceTimeForClip } from './CompositionRenderer'
 import { buildMixedAudioBuffer } from './AudioPipeline'
 
 const MAX_EXPORT_SIDE = 3840
@@ -206,7 +206,7 @@ export async function exportWebM({
         )
         const wasActive = activeById.get(fileIndex) || false
         if (isActive && !wasActive) {
-          try { video.currentTime = 0 } catch { /* noop */ }
+          try { video.currentTime = sourceTimeForClip(activeClip, t) } catch { /* noop */ }
           if (video.paused) { try { await video.play() } catch { /* draw anyway */ } }
           activeById.set(fileIndex, true)
         } else if (!isActive && wasActive) {
@@ -214,6 +214,14 @@ export async function exportWebM({
           activeById.set(fileIndex, false)
         } else if (isActive && video.paused) {
           try { await video.play() } catch { /* noop */ }
+        }
+      }
+
+      if (activeClip?.fileType?.startsWith('video/')) {
+        const activeVideo = exportVideos[activeClip.fileIndex]
+        const targetSourceTime = sourceTimeForClip(activeClip, t)
+        if (activeVideo && Math.abs(activeVideo.currentTime - targetSourceTime) > 0.3) {
+          try { activeVideo.currentTime = targetSourceTime } catch { /* noop */ }
         }
       }
 

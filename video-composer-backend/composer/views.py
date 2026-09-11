@@ -4,14 +4,55 @@ import math
 from rest_framework import viewsets, status
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .models import ComposeJob, Clip, Project
 from .serializers import ComposeJobSerializer, ProjectSerializer
 from .tasks import compose_job_task
+from .ai_agent import (
+    ProviderConfigurationError,
+    ProviderRequestError,
+    ProviderResponseError,
+    request_editing_actions,
+)
 
 # Upper bound for a single clip duration (seconds) — rejects absurd client
 # values while leaving generous headroom for long screen recordings.
 MAX_CLIP_DURATION = 1800  # 30 minutes
+
+
+class AIAgentView(APIView):
+    """Translate an editing request into a small, validated action list.
+
+    Source media stays in the browser; only composition metadata and asset
+    descriptors are sent to the provider.
+    """
+
+    def post(self, request, *args, **kwargs):
+        prompt = str(request.data.get("prompt") or "").strip()
+        if not prompt:
+            return Response({"detail": "prompt is required."}, status=status.HTTP_400_BAD_REQUEST)
+        composition = request.data.get("composition") or {}
+        if not isinstance(composition, dict):
+            return Response({"detail": "composition must be an object."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            result = request_editing_actions(
+                prompt,
+                composition,
+                request.data.get("selected_clip"),
+                request.data.get("assets") or [],
+                history=request.data.get("history"),
+                pending_clarification=request.data.get("pending_clarification"),
+                last_edited_target=request.data.get("last_edited_target"),
+                recording_state=request.data.get("recording_state", "idle"),
+            )
+        except ProviderConfigurationError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except (ProviderRequestError, ProviderResponseError) as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        except Exception:
+            return Response({"detail": "AI Agent request failed."}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(result)
 
 
 class ProjectViewSet(viewsets.ModelViewSet):

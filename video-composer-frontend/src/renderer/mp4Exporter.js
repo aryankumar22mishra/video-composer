@@ -5,7 +5,7 @@
 // Faster than real-time (frames drawn as fast as possible). Falls back to
 // the Phase-3 MediaRecorder WebM path when WebCodecs is unavailable.
 
-import { drawCompositionFrame, findActiveClip } from './CompositionRenderer'
+import { drawCompositionFrame, findActiveClip, sourceTimeForClip } from './CompositionRenderer'
 import { buildMixedAudioBuffer } from './AudioPipeline'
 
 const MAX_EXPORT_SIDE = 3840
@@ -130,7 +130,7 @@ async function fastEncode(args) {
         const video = videos[activeClip.fileIndex]
         if (video) {
           try {
-            const sourceTime = Math.max(0, (t - activeClip.startTime) * (activeClip.speed || 1))
+            const sourceTime = sourceTimeForClip(activeClip, t)
             if (Math.abs(video.currentTime - sourceTime) > 0.04) {
               video.currentTime = sourceTime
               await waitForSeek(video)
