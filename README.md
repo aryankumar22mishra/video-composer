@@ -6,6 +6,9 @@ The repository also includes a Django API for storing project metadata and expor
 
 ## Quick start
 
+For complete Windows setup, daily run commands, normal editor usage and optional
+backend services, see [the setup and running guide](video-composer-backend/README.md#one-time-setup).
+
 To use the current editor, start just the frontend from the repository root:
 
 ```powershell

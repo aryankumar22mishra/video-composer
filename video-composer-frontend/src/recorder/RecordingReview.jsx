@@ -44,9 +44,11 @@ function RecordingReview({ file, elapsed, onUse, onDiscard }) {
     >
       <div className="recording-review-modal">
         <header className="recording-review-header">
+          <div><span className="review-eyebrow">READY TO REVIEW</span>
           <h2 id="recording-review-title" className="recording-review-title">
             Recording complete
           </h2>
+          <p className="review-subtitle">Take a look before adding your recording to the editor.</p></div>
           <button
             type="button"
             className="record-modal-close"
@@ -68,12 +70,14 @@ function RecordingReview({ file, elapsed, onUse, onDiscard }) {
           </div>
 
           <div className="recording-review-meta">
-            <span className="recording-review-meta-label">Recording</span>
-            <span className="recording-review-duration">Duration {formatTime(elapsed)}</span>
+            <span className="recording-review-meta-label" title={file?.name}>{file?.name || "Your recording"}</span>
+            <span className="recording-review-duration">{elapsed > 0 ? formatTime(elapsed) : "Preview to check duration"}</span>
+            <span className="recording-review-duration">{((file?.size || 0) / (1024 * 1024)).toFixed(1)} MB</span>
           </div>
         </div>
 
         <footer className="recording-review-actions">
+          <p className="review-footer-hint">Keep this take to continue editing.</p>
           <button
             type="button"
             className="record-button-secondary"

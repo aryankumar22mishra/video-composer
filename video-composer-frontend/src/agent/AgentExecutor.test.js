@@ -247,3 +247,22 @@ test('brief updates survive clarify rollback and reach subsequent execution roun
   assert.equal(goal.brief.duration_seconds, 30)
   assert.equal(goal.pending_clarification.field, 'key_message')
 })
+
+test('Edit Video cannot execute footage generation even if a provider advertises it', async () => {
+  const f = fixture([next(call('gen', 'generate_video', { prompt: 'College', width: 1280, height: 720, duration: 5 }))])
+  f.request.mode = 'edit'
+  await assert.rejects(f.agent.run(f.request), /selected mode/)
+  assert.equal(f.commits.length, 0)
+})
+
+test('Plan New Video requires scene approval before assembly', async () => {
+  const f = fixture([next(call('append', 'append_asset', { asset_id: 'asset-1', duration: 3 }))])
+  f.request.mode = 'plan'
+  await assert.rejects(f.agent.run(f.request), /Approve a scene plan/)
+  assert.equal(f.commits.length, 0)
+  const g = fixture([next(call('scenes', 'plan_scenes', { title: 'College AI', scenes: [{ description: 'Learning with AI', duration: 3 }] })),
+    next(call('append', 'append_asset', { asset_id: 'asset-1', duration: 3 })), done])
+  g.request.mode = 'plan'
+  await g.agent.run(g.request)
+  assert.equal(g.commits[0].composition.tracks[0].clips.length, 2)
+})

@@ -1,5 +1,24 @@
 # Video agent planner and executor
 
+## Panel modes
+
+The AI panel starts in **Edit Video**, for timeline and uploaded-media edits.
+**Plan New Video** collects a topic, audience, message, duration, format and available
+assets, then shows a scene plan for approval before assembling uploaded media.
+Duration and format can use the displayed defaults. The two modes have separate
+chat histories, drafts, briefs, result messages and generation preferences in browser
+memory. Switching modes does not change the timeline. Finish or cancel an active
+request before switching; speech capture stops on a mode switch and its draft remains.
+
+The frontend sends `mode=edit|plan` with each planning request and capability lookup.
+Registry `modes` fields control backend and frontend tool availability. Edit Video
+excludes scene planning and generation. Plan New Video exposes an optional **Generate
+Assets** checkbox only when image/video services are configured; `generate_assets=true`
+enables those tools for the request. Paid-job confirmation and asset-preview approval
+still apply. Without configured generation, planning uses uploaded assets.
+
+## Request flow
+
 The editor sends natural-language goals to `POST /api/ai/plan/`. The text provider
 plans registered tool calls; the browser validates and executes them against a
 private composition. Each subsequent round receives the actual staged composition,
@@ -41,6 +60,10 @@ Plans return `status`, `goal`, `message`, `calls`, the accumulated `brief`,
 `name`, `arguments` and optional `depends_on` IDs. Dependencies must have succeeded
 earlier or appear earlier in the same sequential batch. New result IDs must come
 from a subsequent planning round; invented IDs and unresolved references fail.
+A plan that violates the ID/dependency rules gets one bounded self-repair round:
+the backend resubmits the request with the exact rejection reason and instructions
+to re-issue unique IDs with resolvable `depends_on`; a second invalid plan still
+fails with a 502 so the user can retry.
 
 For example, split a clip, receive the actual two new clip IDs, then trim or mute
 one of those IDs in the next round. Calls are validated against the shared argument

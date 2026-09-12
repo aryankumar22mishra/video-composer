@@ -94,6 +94,10 @@ export class AgentExecutor {
           }
           if (results.length >= LIMITS.calls) throw new Error('Tool call limit reached. Staged edits were discarded; try a smaller goal.')
           const tool = validateCall(call, tools)
+          if (request.mode && !tool.modes.includes(request.mode)) throw new Error('This tool is not available in the selected mode.')
+          if (request.mode === 'plan' && ['generate_image', 'generate_video'].includes(call.name) && !request.generate_assets) throw new Error('Enable Generate Assets before requesting generated footage.')
+          if (request.mode === 'plan' && ['edit', 'append', 'audio', 'service'].includes(tool.executor)
+              && !request.scene_plan_approved && !stage.scenePlan) throw new Error('Approve a scene plan before creating or editing the timeline in Plan New Video.')
           const executor = EXECUTORS[tool.executor]
           if (!executor) throw new Error('This tool has no registered executor.')
           executed.set(call.id, signature)

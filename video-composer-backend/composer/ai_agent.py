@@ -20,6 +20,13 @@ class ProviderResponseError(Exception):
 
 logger = logging.getLogger(__name__)
 
+REQUEST_TOO_LARGE = (
+    "The AI provider rejected the planning request as too large (HTTP 413). "
+    "Its request-size or input-token limit was exceeded. Try a smaller composition "
+    "or configure a model/account with a higher input limit. Your brief is retained; "
+    "no staged timeline edits were applied."
+)
+
 from .tool_registry import REGISTRY
 
 SUPPORTED_TOOLS = {name for name, tool in REGISTRY.items() if tool["executor"] == "edit"}
@@ -309,7 +316,7 @@ def request_editing_actions(prompt, composition, selected_clip, assets, history=
         url = f"{base_url}/models/{model}:generateContent"
         payload = {
             "systemInstruction": {"parts": [{"text": system_prompt}]},
-            "contents": [{"role": "user", "parts": [{"text": json.dumps(context)}]}],
+            "contents": [{"role": "user", "parts": [{"text": json.dumps(context, separators=(",", ":"), ensure_ascii=False)}]}],
             "generationConfig": {
                 "temperature": 0,
                 "responseMimeType": "application/json",
@@ -337,7 +344,7 @@ def request_editing_actions(prompt, composition, selected_clip, assets, history=
                 response_format={"type": "json_object"},
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": json.dumps(context)},
+                    {"role": "user", "content": json.dumps(context, separators=(",", ":"), ensure_ascii=False)},
                 ],
             )
             if not completion.choices:
@@ -350,6 +357,8 @@ def request_editing_actions(prompt, composition, selected_clip, assets, history=
             raise
         except Exception as exc:
             status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code == 413:
+                raise ProviderRequestError(REQUEST_TOO_LARGE) from exc
             if status_code in (429, 503):
                 raise ProviderRequestError(
                     f"AI provider is temporarily busy (HTTP {status_code}). Please try again shortly."
@@ -372,6 +381,8 @@ def request_editing_actions(prompt, composition, selected_clip, assets, history=
                 provider_payload = json.loads(response.read().decode("utf-8"))
             break
         except urllib.error.HTTPError as exc:
+            if exc.code == 413:
+                raise ProviderRequestError(REQUEST_TOO_LARGE) from exc
             provider_message = ""
             try:
                 error_payload = json.loads(exc.read().decode("utf-8"))

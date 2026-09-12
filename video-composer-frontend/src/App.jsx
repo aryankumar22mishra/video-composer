@@ -1,3 +1,5 @@
+import TimelineEdge from './components/TimelineEdge'
+import { resizeTimelineClip } from './state/timelineResize'
 ﻿import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import './App.css'
 import { createComposition, createCompositionClip, COMPOSITION_DEFAULTS } from './state/composition'
@@ -11,6 +13,7 @@ import RecordingReview from './recorder/RecordingReview'
 import DimensionsPopover from './components/DimensionsPopover'
 import Sidebar from './components/Sidebar'
 import AIChatPanel from './components/AIChatPanel'
+import { useAgentSessions } from './agent/agentSessions'
 import ZoomPanel from './components/ZoomPanel'
 import { useClientExport, EXPORT_FORMATS } from './renderer/useClientExport'
 import { createCompositionText } from './state/composition'
@@ -270,6 +273,7 @@ function App() {
     previewBoxHeight = Math.round(previewBoxWidth / (previewWidth / previewHeight))
   }
   const previewBoxStyle = {
+    '--composition-preview-ratio': `${previewWidth} / ${previewHeight}`,
     width: `${previewBoxWidth}px`,
     height: `${previewBoxHeight}px`,
   }
@@ -284,20 +288,29 @@ function App() {
   // Active section for the OpenVid-style left sidebar navigation.
   // "composer" → existing editor view, "record" → RecordModal is opened.
   const [activeSection, setActiveSection] = useState('media')
-  const [aiMessages, setAiMessages] = useState([])
+  const [aiMode, setAiMode] = useState('edit')
+  const aiSession = useAgentSessions(aiMode)
+  const aiMessages = aiSession.messages
+  const setAiMessages = aiSession.set('messages')
   const [aiLoading, setAiLoading] = useState(false)
-  const [aiError, setAiError] = useState('')
-  const [aiGoal, setAiGoal] = useState(null)
-  const [aiLastEditedTarget, setAiLastEditedTarget] = useState(null)
-  const [aiLastResult, setAiLastResult] = useState(null)
-  const [aiFailedPrompt, setAiFailedPrompt] = useState('')
+  const aiError = aiSession.error
+  const setAiError = aiSession.set('error')
+  const aiGoal = aiSession.goal
+  const setAiGoal = aiSession.set('goal')
+  const aiLastEditedTarget = aiSession.lastEditedTarget
+  const setAiLastEditedTarget = aiSession.set('lastEditedTarget')
+  const aiLastResult = aiSession.lastResult
+  const setAiLastResult = aiSession.set('lastResult')
+  const aiFailedPrompt = aiSession.failedPrompt
+  const setAiFailedPrompt = aiSession.set('failedPrompt')
   const aiInFlightKeyRef = useRef(null)
-  const aiUndoRef = useRef(null)
+  const aiUndoRefs = useRef({ edit: { current: null }, plan: { current: null } })
   const compositionRef = useRef(composition)
   const aiControllerRef = useRef(null)
   const aiReviewResolverRef = useRef(null)
   const [aiReview, setAiReview] = useState(null)
-  const [aiProgress, setAiProgress] = useState(null)
+  const aiProgress = aiSession.progress
+  const setAiProgress = aiSession.set('progress')
   const aiEditorRef = useRef({ version: 0 })
   const editorKey = JSON.stringify([composition, clips.map(assetId), audioFile ? assetId(audioFile) : null, selectedClipId, selectedTextId])
 
@@ -1085,7 +1098,7 @@ function App() {
   }
 
   const undoLatestAIEdit = () => {
-    const undo = aiUndoRef.current
+    const undo = aiUndoRefs.current[aiMode].current
     if (!undo || JSON.stringify(compositionRef.current) !== undo.after) {
       setAiError('The latest AI edit is no longer the current edit, so it cannot be undone here.')
       return false
@@ -1096,7 +1109,7 @@ function App() {
       return false
     }
     compositionRef.current = previous
-    aiUndoRef.current = null
+    aiUndoRefs.current[aiMode].current = null
     setAiLastResult(null)
     setAiMessages((messages) => [...messages, { id: `${Date.now()}-undo`, role: 'assistant', content: 'Undid the last AI edit.' }])
     return true
@@ -1110,6 +1123,8 @@ function App() {
       return
     }
     let goalContext = beginGoalTurn(aiGoal, cleanPrompt, compositionRef.current)
+    if (aiMode === 'edit') goalContext = { ...goalContext, goal_kind: null, pending_clarification: aiGoal?.pending_clarification || null }
+    else goalContext.goal_kind = 'promotional_video'
     setAiGoal(goalContext)
     const snapshot = JSON.stringify(compositionRef.current)
     const version = aiEditorRef.current.version
@@ -1142,6 +1157,7 @@ function App() {
       recordingState: aiEditorRef.current.recordingState,
     })
     const agent = createBrowserAgent({
+      mode: aiMode, generateAssets: aiSession.generateAssets,
       signal: controller.signal, getVersion: () => aiEditorRef.current.version, assertFresh,
       context, review, progress: setAiProgress,
       onPlan: (plan) => {
@@ -1160,7 +1176,7 @@ function App() {
           setComposition(stage.composition)
           compositionRef.current = stage.composition
           setTimelineItems(syncTimelineItems(timelineItems, stage.composition))
-          aiUndoRef.current = { before: snapshot, after: JSON.stringify(stage.composition) }
+          aiUndoRefs.current[aiMode].current = { before: snapshot, after: JSON.stringify(stage.composition) }
           setAiLastEditedTarget(stage.lastEditedTarget)
         }
       },
@@ -1180,6 +1196,7 @@ function App() {
     })
     try {
       const result = await agent.run({
+        mode: aiMode, generate_assets: aiSession.generateAssets,
         prompt: cleanPrompt, composition: compositionRef.current, files: clips,
         selected_clip: compositionRef.current.tracks[0].clips.find((clip) => clip.id === selectedClipId) || null,
         selected_text_id: selectedTextId,
@@ -1307,19 +1324,17 @@ function App() {
     window.addEventListener('pointerup', handleUp)
   }
 
-  const trimSelectedClip = (amount) => {
-    if (!selectedClipId) return
-    setComposition((prev) => {
-      let runningTime = 0
-      const clips = prev.tracks[0].clips.map((clip) => {
-        const duration = clip.id === selectedClipId
-          ? Math.max(0.25, clip.duration + amount)
-          : clip.duration
-        const next = { ...clip, duration, startTime: runningTime }
-        runningTime += duration
-        return next
-      })
-      return { ...prev, duration: runningTime, tracks: [{ ...prev.tracks[0], clips }, prev.tracks[1]] }
+  const resizeClipEdge = (item, edge, delta) => {
+    const file = clips[item.clipIndex]
+    setSelectedClipId(item.uid)
+    setIsPlaying(false)
+    setComposition((previous) => {
+      const clip = previous.tracks[0].clips.find(value => value.id === item.uid)
+      if (!clip) return previous
+      const sourceLength = file?.type.startsWith('video/')
+        ? clipDurations[item.clipIndex] || recordedDurationsRef.current.get(clipFileKey(file)) || ((clip.sourceStart ?? 0) + (clip.baseDuration || clip.duration * (clip.speed || 1)))
+        : Infinity
+      return resizeTimelineClip(previous, item.uid, edge, delta, sourceLength)
     })
   }
 
@@ -1494,6 +1509,14 @@ function App() {
           )
         ) : activeSection === 'agent' ? (
           <AIChatPanel
+            key={aiMode}
+            mode={aiMode}
+            onModeChange={(mode) => { if (!aiInFlightKeyRef.current) setAiMode(mode) }}
+            input={aiSession.draft}
+            onInputChange={aiSession.set('draft')}
+            generateAssets={aiSession.generateAssets}
+            onGenerateAssetsChange={aiSession.set('generateAssets')}
+            brief={aiGoal?.brief}
             messages={aiMessages}
             onSend={handleSendAI}
             loading={aiLoading}
@@ -1709,6 +1732,7 @@ function App() {
             height={previewHeight}
             className="canvas-preview"
           />
+          {!timelineItems.length && !composition.texts?.length && <div className="composition-preview-empty" aria-label="Empty video preview" />}
           {activeZoom && (
             <span className="zoom-preview-badge" role="status">
               ZOOM {activeZoom.scale.toFixed(1)}&#215;
@@ -1727,67 +1751,7 @@ function App() {
           )}
         </div>
 
-        {/* Synced preview audio: plays the uploaded audio with the shared
-            timeline clock. Effects below keep it aligned with currentTime
-            (play/pause, drift-correct, seek). After the audio ends the
-            video preview keeps playing in silence. */}
-        {audioUrl && (
-          <audio
-            ref={audioRef}
-            src={audioUrl}
-            preload="auto"
-            hidden
-          />
-        )}
-
-        {(timelineItems.length > 0 || audioFile || zoomFragments.length > 0) && (
-          <div className="timeline-section compact">
-            <div className="timeline-controls">
-              <div className="timeline-controls-top">
-                <div
-                  className="dimension-control timeline-dimension-control"
-                >
-                  <button
-                    type="button"
-                    ref={dimensionTriggerRef}
-                    className="dimension-trigger"
-                    onClick={() => setIsDimensionsOpen((open) => !open)}
-                    aria-haspopup="dialog"
-                    aria-expanded={isDimensionsOpen}
-                    title={`Composition dimensions: ${composition.width}\u00D7${composition.height}`}
-                  >
-                    <svg
-                      className="dimension-trigger-icon"
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.8"
-                      strokeLinecap="round"
-                      aria-hidden="true"
-                    >
-                      <rect x="3" y="3" width="18" height="18" rx="3" />
-                      <path d="M8 3v4M16 3v4M3 8h4M3 16h4M16 21v-4M8 21v-4M21 8h-4M21 16h-4" />
-                    </svg>
-                    <span>{`${composition.width}\u00D7${composition.height}`}</span>
-                    <span className="dimension-trigger-caret" aria-hidden="true">&#9662;</span>
-                  </button>
-
-                  {isDimensionsOpen && (
-                    <DimensionsPopover
-                      value={aspectRatioMode}
-                      width={composition.width}
-                      height={composition.height}
-                      anchorRef={dimensionTriggerRef}
-                      onSelect={handleDimensionPresetSelect}
-                      onApplyCustom={handleApplyCustomDimensions}
-                      onClose={handleCloseDimensions}
-                    />
-                  )}
-                </div>
-
-                <div className="playback-bar">
+                <div className="playback-bar editor-playback-bar">
                   <span className="playback-time">{formatTime(currentTime)}</span>
 
                   <button
@@ -1849,6 +1813,73 @@ function App() {
 
                   <span className="playback-time">{formatTime(totalDuration)}</span>
                 </div>
+
+        {/* Synced preview audio: plays the uploaded audio with the shared
+            timeline clock. Effects below keep it aligned with currentTime
+            (play/pause, drift-correct, seek). After the audio ends the
+            video preview keeps playing in silence. */}
+        {audioUrl && (
+          <audio
+            ref={audioRef}
+            src={audioUrl}
+            preload="auto"
+            hidden
+          />
+        )}
+
+        { (
+          <div className="timeline-section compact">
+            <div className="timeline-controls">
+              <div className="timeline-controls-top">
+                <div
+                  className="dimension-control timeline-dimension-control"
+                >
+                  <button
+                    type="button"
+                    ref={dimensionTriggerRef}
+                    className="dimension-trigger"
+                    onClick={() => setIsDimensionsOpen((open) => !open)}
+                    aria-haspopup="dialog"
+                    aria-expanded={isDimensionsOpen}
+                    title={`Composition dimensions: ${composition.width}\u00D7${composition.height}`}
+                  >
+                    <svg
+                      className="dimension-trigger-icon"
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      aria-hidden="true"
+                    >
+                      <rect x="3" y="3" width="18" height="18" rx="3" />
+                      <path d="M8 3v4M16 3v4M3 8h4M3 16h4M16 21v-4M8 21v-4M21 8h-4M21 16h-4" />
+                    </svg>
+                    <span>{`${composition.width}\u00D7${composition.height}`}</span>
+                    <span className="dimension-trigger-caret" aria-hidden="true">&#9662;</span>
+                  </button>
+
+                  {isDimensionsOpen && (
+                    <DimensionsPopover
+                      value={aspectRatioMode}
+                      width={composition.width}
+                      height={composition.height}
+                      anchorRef={dimensionTriggerRef}
+                      onSelect={handleDimensionPresetSelect}
+                      onApplyCustom={handleApplyCustomDimensions}
+                      onClose={handleCloseDimensions}
+                    />
+                  )}
+                </div>
+
+                <div className="reference-timeline-actions">
+                  <span>{formatTime(currentTime)} / {formatTime(totalDuration)}</span>
+                  <button type="button" onClick={handleAddText}>T &nbsp; Add text</button>
+                  <button type="button" onClick={() => setZoom((value) => Math.max(10, value / 1.25))} aria-label="Zoom out timeline" title="Zoom out timeline">&#8722;</button>
+                  <button type="button" onClick={() => setZoom((value) => Math.min(200, value * 1.25))} aria-label="Zoom in timeline" title="Zoom in timeline">+</button>
+                </div>
               </div>
               <div className="timeline-scroll">
               <div
@@ -1901,11 +1932,11 @@ function App() {
                             onClick={() => setSelectedClipId(item.uid)}
                             title="Click to select"
                           >
-                            <button type="button" className="timeline-trim-handle timeline-trim-start" onClick={(event) => { event.stopPropagation(); trimSelectedClip(-0.25) }} aria-label="Trim clip start">‹</button>
+                            <TimelineEdge edge="start" duration={itemDuration} zoom={zoom} onCommit={(delta) => resizeClipEdge(item, "start", delta)} />
                             {clipPreviews[item.clipIndex] && <img src={clipPreviews[item.clipIndex]} className="timeline-thumb" alt="" aria-hidden="true" />}
                             <b>{file.name}</b>
                             <small>{formatTime(itemDuration)}</small>
-                            <button type="button" className="timeline-trim-handle timeline-trim-end" onClick={(event) => { event.stopPropagation(); trimSelectedClip(0.25) }} aria-label="Trim clip end">›</button>
+                            <TimelineEdge edge="end" duration={itemDuration} zoom={zoom} onCommit={(delta) => resizeClipEdge(item, "end", delta)} />
                             <button
                               type="button"
                               className="timeline-block-remove"
@@ -1922,7 +1953,7 @@ function App() {
                         )
                       })
                     ) : (
-                      <em>Click a video in "My Videos" to add it here</em>
+                      <em>Add clips from the media library to build your video</em>
                     )}
                   </div>
                 </div>

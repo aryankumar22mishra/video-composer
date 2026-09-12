@@ -23,7 +23,11 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "split_clip",
@@ -49,7 +53,11 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "reorder_clips",
@@ -75,7 +83,11 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "update_text",
@@ -101,7 +113,11 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "add_text",
@@ -131,7 +147,11 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "set_speed",
@@ -157,7 +177,11 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "set_volume",
@@ -183,7 +207,11 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "set_dimensions",
@@ -211,7 +239,35 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
+  },
+  {
+    "name": "set_aspect_ratio",
+    "description": "Change the output canvas to an aspect ratio such as 16:9, 1:1, 9:16, 4:5 or 4:13. Matching dimension presets are applied exactly. Aspect-ratio requests are unambiguous: apply them directly and never ask the user to confirm.",
+    "arguments": {
+      "type": "object",
+      "properties": {
+        "ratio": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 20
+        }
+      },
+      "required": [
+        "ratio"
+      ],
+      "additionalProperties": false
+    },
+    "executor": "edit",
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "set_grayscale",
@@ -235,7 +291,11 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "keep_clip_range",
@@ -267,7 +327,11 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "remove_clip_range",
@@ -299,7 +363,11 @@
       "additionalProperties": false
     },
     "executor": "edit",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "open_recording_setup",
@@ -311,7 +379,11 @@
       "additionalProperties": false
     },
     "executor": "ui",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "stop_recording",
@@ -323,7 +395,11 @@
       "additionalProperties": false
     },
     "executor": "ui",
-    "availability": "recording"
+    "availability": "recording",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "open_media_upload",
@@ -335,7 +411,11 @@
       "additionalProperties": false
     },
     "executor": "ui",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "plan_scenes",
@@ -391,7 +471,10 @@
       "additionalProperties": false
     },
     "executor": "scenes",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "plan"
+    ]
   },
   {
     "name": "append_asset",
@@ -417,7 +500,11 @@
       "additionalProperties": false
     },
     "executor": "append",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "set_background_audio",
@@ -437,7 +524,11 @@
       "additionalProperties": false
     },
     "executor": "audio",
-    "availability": "browser"
+    "availability": "browser",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "transcribe",
@@ -465,7 +556,11 @@
     "availability": "service",
     "service": "TRANSCRIPTION",
     "chargeable": true,
-    "alternative": "Upload an existing transcript as text in chat, or type captions with add_text."
+    "alternative": "Upload an existing transcript as text in chat, or type captions with add_text.",
+    "modes": [
+      "edit",
+      "plan"
+    ]
   },
   {
     "name": "text_to_speech",
@@ -494,7 +589,10 @@
     "availability": "service",
     "service": "TTS",
     "chargeable": true,
-    "alternative": "Upload a prerecorded narration file using My media > Upload."
+    "alternative": "Upload a prerecorded narration file using My media > Upload.",
+    "modes": [
+      "plan"
+    ]
   },
   {
     "name": "generate_image",
@@ -531,7 +629,10 @@
     "availability": "service",
     "service": "IMAGE_GENERATION",
     "chargeable": true,
-    "alternative": "Use uploaded images/videos or record your screen; append_asset can assemble them."
+    "alternative": "Use uploaded images/videos or record your screen; append_asset can assemble them.",
+    "modes": [
+      "plan"
+    ]
   },
   {
     "name": "generate_video",
@@ -574,6 +675,9 @@
     "availability": "service",
     "service": "VIDEO_GENERATION",
     "chargeable": true,
-    "alternative": "Use uploaded images/videos or record your screen; append_asset can assemble them."
+    "alternative": "Use uploaded images/videos or record your screen; append_asset can assemble them.",
+    "modes": [
+      "plan"
+    ]
   }
 ]

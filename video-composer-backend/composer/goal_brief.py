@@ -40,12 +40,16 @@ def goal_context(data):
         raise ValueError("Invalid goal kind.")
     promotional = bool(re.search(r"\b(promo(?:tional)?|advert(?:isement|ising)?|commercial)\b", prompt, re.I))
     creation = re.search(r"\b(create|build|produce|start|make (?:a|an|another|new))\b", prompt, re.I) and re.search(r"\b(video|promo|advertisement|commercial)\b", prompt, re.I) and not re.search(r"\b(actually|instead|correction)\b", prompt, re.I)
-    new_goal = data.get("round", 0) == 0 and bool(creation or re.search(r"\b(new|another|different)\s+(?:(?:short|promotional|promo)\s+)*(?:goal|video|promo|advertisement|commercial)\b|\bstart (?:over|again)\b", prompt, re.I))
+    new_goal = data.get("round", 0) == 0 and bool((creation and not data.get("pending_clarification")) or re.search(r"\b(new|another|different)\s+(?:(?:short|promotional|promo)\s+)*(?:goal|video|promo|advertisement|commercial)\b|\bstart (?:over|again)\b", prompt, re.I))
     brief = merge_brief({}, data.get("brief") or {})
     pending = data.get("pending_clarification")
     if new_goal:
         brief, pending, kind = merge_brief({}, {}), None, "promotional_video" if promotional else kind if re.search(r"start (?:over|again)", prompt, re.I) else None
     if promotional:
+        kind = "promotional_video"
+    if data.get("mode") == "edit":
+        kind = None
+    elif data.get("mode") == "plan":
         kind = "promotional_video"
     # Compatibility for callers which have not merged the short reply themselves.
     if data.get("round", 0) == 0 and kind == "promotional_video":
@@ -62,6 +66,8 @@ def goal_context(data):
         if field in ESSENTIALS and not correction and not any(key in update for key in ("subject", "audience", "key_message", "format")):
             answer = (prompt[:duration.start()] + prompt[duration.end():] if duration else prompt).strip().rstrip(' ,.!?;\t\n')
             if answer:
+                if field == "subject":
+                    answer = re.sub(r"^(?:create|make|build|produce)\s+.*?\bvideo\s+about\s+", "", answer, flags=re.I)
                 update[field] = answer
         brief = merge_brief(brief, update)
     if kind == "promotional_video":
@@ -72,7 +78,7 @@ def goal_context(data):
             raise ValueError("Composition dimensions must be positive integers.")
         divisor = gcd(width, height)
         brief["format"] = brief["format"] or f"{width // divisor}:{height // divisor}"
-    return {"goal_id": str(uuid.uuid4() if new_goal else data.get("goal_id") or uuid.uuid4()), "goal_kind": kind,
+    return {"mode": data.get("mode"), "goal_id": str(uuid.uuid4() if new_goal else data.get("goal_id") or uuid.uuid4()), "goal_kind": kind,
             "brief": brief, "pending_clarification": pending, "new_goal": new_goal,
             "scene_plan_approved": not new_goal and (data.get("scene_plan_approved") is True or any(
                 r.get("name") == "plan_scenes" and r.get("status") == "success" for r in data.get("tool_results", []) if isinstance(r, dict)))}
@@ -84,6 +90,11 @@ def complete_goal_response(plan, goal):
         missing = next((field for field in ESSENTIALS if not updated["brief"][field]), None)
         if missing:
             question = QUESTIONS[missing] if missing != "key_message" else f"What key message should {updated['brief']['audience']} take away?"
+            if goal.get("mode") == "plan":
+                if missing == "subject":
+                    question = "What topic should the new video cover?"
+                elif missing == "audience":
+                    question = "Who is the new video for?"
             plan = {"status": "clarify", "goal": plan.get("goal", "Promotional video"), "message": question, "calls": []}
             updated["pending_clarification"] = {"field": missing, "question": question}
         else:

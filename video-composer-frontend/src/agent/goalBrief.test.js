@@ -4,6 +4,15 @@ import { beginGoalTurn, receiveGoalPlan, mergeBrief } from './goalBrief.js'
 import { createBrowserAgent } from './browserAgent.js'
 import { createComposition } from '../state/composition.js'
 
+test('creation-worded answer continues the pending promotional brief', () => {
+  const previous = { goal_id: 'existing-goal', goal_kind: 'promotional_video', brief: { format: '9:16' }, pending_clarification: { field: 'subject' } }
+  const result = beginGoalTurn(previous, 'Create a promotional video about AI for college, 30 seconds', createComposition())
+  assert.equal(result.goal_id, previous.goal_id)
+  assert.equal(result.brief.subject, 'AI for college')
+  assert.equal(result.brief.duration_seconds, 30)
+  assert.equal(result.brief.format, '9:16')
+})
+
 test('exact promotional conversation sends accumulated brief, history and pending clarification on every request', async (t) => {
   const composition = createComposition()
   const prompts = ['Create a short promotional video.', 'AI video for college, 30 seconds.', 'College students.']

@@ -59,10 +59,8 @@ function drawWebcamOverlay(frame) {
     return
   }
 
-  const side = Math.round(
-    canvas.width *
-      (WEBCAM_SIZE_RATIO[size] || WEBCAM_SIZE_RATIO.medium),
-  )
+  const ratio = WEBCAM_SIZE_RATIO[size] ?? Math.max(1, Math.min(100, Number(size) || 25)) / 100
+  const side = Math.min(canvas.height, Math.round(canvas.width * ratio))
 
   const zoomFactor = Math.max(1, Number(zoom) || 1)
   const renderSide = side * zoomFactor
@@ -72,8 +70,8 @@ function drawWebcamOverlay(frame) {
     Math.round((WEBCAM_MARGIN * canvas.width) / 1280),
   )
 
-  const isLeft = position.includes('left')
-  const isTop = position.startsWith('top')
+  const isLeft = typeof position === 'string' && position.includes('left')
+  const isTop = typeof position === 'string' && position.startsWith('top')
 
   let x = isLeft
     ? margin
@@ -82,6 +80,11 @@ function drawWebcamOverlay(frame) {
   let y = isTop
     ? margin
     : canvas.height - side - margin
+
+  if (position && typeof position === 'object') {
+    x = position.x * Math.max(0, canvas.width - side)
+    y = position.y * Math.max(0, canvas.height - side)
+  }
 
   x = Math.max(
     0,

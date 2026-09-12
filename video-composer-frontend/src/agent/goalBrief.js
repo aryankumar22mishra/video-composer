@@ -20,7 +20,7 @@ export function beginGoalTurn(previous, prompt, composition) {
   const promotional = /\b(promo(?:tional)?|advert(?:isement|ising)?|commercial)\b/i.test(prompt)
   const creation = /\b(create|build|produce|start|make (?:a|an|another|new))\b/i.test(prompt)
   const explicitlyNew = /\b(new|another|different)\s+(?:(?:short|promotional|promo)\s+)*(?:goal|video|promo|advertisement|commercial)\b|\bstart (?:over|again)\b/i.test(prompt)
-  const goal = !previous || explicitlyNew || (creation && /\b(video|promo|advertisement|commercial)\b/i.test(prompt) && !/\b(actually|instead|correction)\b/i.test(prompt))
+  const goal = !previous || explicitlyNew || (!previous.pending_clarification && creation && /\b(video|promo|advertisement|commercial)\b/i.test(prompt) && !/\b(actually|instead|correction)\b/i.test(prompt))
     ? { goal_id: crypto.randomUUID(), goal_kind: promotional ? 'promotional_video' : null, brief: { ...EMPTY_BRIEF }, pending_clarification: null }
     : { ...previous, brief: { ...previous.brief } }
   const update = {}
@@ -38,6 +38,7 @@ export function beginGoalTurn(previous, prompt, composition) {
   const remainder = text(prompt.replace(duration?.[0] || /$^/, '').replace(/[,;]+\s*$/, ''))
   const isCorrection = /^(actually|instead|change|update|make|set|keep|use|it should|the duration)\b/i.test(prompt)
   if (field && field !== 'duration_seconds' && !Object.keys(labels).some((key) => update[key]) && !isCorrection && remainder) update[field] = remainder
+  if (field === 'subject' && update.subject) update.subject = update.subject.replace(/^(?:create|make|build|produce)\s+.*?\bvideo\s+about\s+/i, '')
   goal.brief = mergeBrief(goal.brief, update)
   if (goal.goal_kind === 'promotional_video') {
     goal.brief.duration_seconds ??= 30

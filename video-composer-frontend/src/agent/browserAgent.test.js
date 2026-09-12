@@ -35,3 +35,13 @@ test('capability request sends the current recording state without corrupting th
   await agent.io.tools()
   assert.equal(requested, '/api/ai/tools/?recording_state=recording')
 })
+
+test('selected mode and generation preference reach capability and planner requests', async (t) => {
+  const sent = []
+  t.mock.method(globalThis, 'fetch', async (url, options) => { sent.push({ url, options }); return { ok: true, json: async () => ({ tools: [], status: 'clarify', calls: [] }) } })
+  const agent = createBrowserAgent({ mode: 'plan', generateAssets: true, context: () => ({ recordingState: 'idle' }) })
+  await agent.io.tools()
+  await agent.io.plan({ mode: 'plan', generate_assets: true, brief: { subject: 'AI' } })
+  assert.equal(sent[0].url, '/api/ai/tools/?recording_state=idle&mode=plan&generate_assets=true')
+  assert.equal(JSON.parse(sent[1].options.body).mode, 'plan')
+})

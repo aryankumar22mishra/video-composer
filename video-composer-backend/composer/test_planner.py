@@ -57,8 +57,9 @@ class PlannerTests(TestCase):
     def test_single_edit_is_schema_validated(self):
         result = self.plan({"status": "continue", "calls": [call()], "goal": "Quieter audio", "message": ""})
         self.assertEqual(result["calls"][0]["name"], "set_volume")
-        self.assertIn('"arguments"', self.sent["system_override"])
-        self.assertIn("set_volume", self.sent["system_override"])
+        definitions = self.sent["planner_context"]["tool_definitions"]
+        self.assertTrue(any(tool["name"] == "set_volume" and "arguments" in tool for tool in definitions))
+        self.assertNotIn("REGISTRY:", self.sent["system_override"])
 
     def test_real_results_are_fed_back_for_dependent_planning(self):
         receipts = [{"id": "split", "status": "success", "output": {"clip_ids": ["actual-a", "actual-b"]}}]
@@ -70,12 +71,41 @@ class PlannerTests(TestCase):
             with self.assertRaises(ProviderResponseError):
                 self.plan({"status": "continue", "calls": calls})
 
+    def test_invalid_plan_gets_one_self_repair_round(self):
+        responses = [
+            {"status": "continue", "calls": [call(), call()], "goal": "g", "message": ""},
+            {"status": "continue", "calls": [call(id="step-2")], "goal": "g", "message": ""},
+        ]
+        seen = []
+
+        def provider(*args, **kwargs):
+            seen.append(kwargs["system_override"])
+            return kwargs["response_parser"](json.dumps(responses[len(seen) - 1]))
+
+        with mock.patch("composer.planner.request_editing_actions", side_effect=provider):
+            result = request_plan({"prompt": "Make the clip quieter", "composition": {"tracks": []}})
+
+        self.assertEqual(result["calls"][0]["id"], "step-2")
+        self.assertEqual(len(seen), 2)
+        self.assertNotIn("was rejected", seen[0])
+        self.assertIn("was rejected", seen[1])
+
+    def test_second_invalid_plan_still_fails_after_repair(self):
+        def provider(*args, **kwargs):
+            return kwargs["response_parser"](json.dumps({"status": "continue", "calls": [call(), call()], "goal": "g", "message": ""}))
+
+        with mock.patch("composer.planner.request_editing_actions", side_effect=provider) as provider_mock:
+            with self.assertRaises(ProviderResponseError):
+                request_plan({"prompt": "x", "composition": {"tracks": []}})
+        self.assertEqual(provider_mock.call_count, 2)
+
     def test_goal_clarification_and_unavailable_response(self):
         result = self.plan({"status": "clarify", "calls": [], "message": "What product, audience, duration and format should the promotion use?"})
         self.assertEqual(result["status"], "clarify")
         self.assertIn("plan_scenes", PLANNER_PROMPT)
-        with self.assertRaises(ProviderResponseError):
-            self.plan({"status": "clarify", "calls": [call()], "message": "Which clip?"})
+        clarified = self.plan({"status": "clarify", "calls": [call()], "message": "Which clip?"})
+        self.assertEqual(clarified["calls"], [])
+        self.assertEqual(clarified["status"], "clarify")
 
     def test_limits_reject_before_provider(self):
         with mock.patch("composer.planner.request_editing_actions") as provider:

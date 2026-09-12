@@ -65,7 +65,7 @@ export function createBrowserAgent(options) {
   const runId = crypto.randomUUID()
   return new AgentExecutor({
     ...options,
-    tools: async () => (await requestJSON(`tools?recording_state=${encodeURIComponent(options.context().recordingState)}`, undefined, options.signal)).tools,
+    tools: async () => (await requestJSON(`tools?recording_state=${encodeURIComponent(options.context().recordingState)}${options.mode ? `&mode=${options.mode}&generate_assets=${Boolean(options.generateAssets)}` : ''}`, undefined, options.signal)).tools,
     plan: (context) => requestJSON('plan', context, options.signal),
     loadGenerated: (result) => loadGenerated(result, options.signal),
     releasePreview: (asset) => URL.revokeObjectURL(asset.previewUrl),

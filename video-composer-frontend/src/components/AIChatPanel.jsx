@@ -1,35 +1,44 @@
 import { useEffect, useRef, useState } from 'react'
 
-const EXAMPLE_PROMPTS = [
-  'Create a short promotional video',
-  'Make the selected clip grayscale and 1.25x faster',
-  'Trim the selected clip to 5 seconds and add a title',
-  'Set this composition to 1080 by 1920',
-]
+import { AGENT_MODES } from '../agent/agentSessions'
 
 function getSpeechRecognition() {
   return window.SpeechRecognition || window.webkitSpeechRecognition || null
 }
 
-function receiptLabel(result, phase) {
-  if (result.status === 'error') return 'failed'
-  if (result.output?.changed) return phase === 'committed' ? 'applied' : ['failed', 'clarify', 'unavailable'].includes(phase) ? 'discarded' : 'staged'
-  if (result.output?.deferred) return ['failed', 'clarify', 'unavailable'].includes(phase) ? 'not executed' : 'queued'
-  return 'completed'
-}
-
-function AIChatPanel({ messages, onSend, loading, error, selectedClip, assets, lastResult, onUndo, failedPrompt, onRetry, progress, review, onReview, onCancel }) {
-  const [input, setInput] = useState('')
+function AIChatPanel({ mode, onModeChange, input, onInputChange: setInput, generateAssets, onGenerateAssetsChange, brief, messages, onSend, loading, error, selectedClip, assets, lastResult, onUndo, failedPrompt, onRetry, progress, review, onReview, onCancel }) {
+  const copy = AGENT_MODES[mode]
+  const [capabilities, setCapabilities] = useState([])
+  const [capabilityError, setCapabilityError] = useState(false)
   const [listening, setListening] = useState(false)
   const [speechError, setSpeechError] = useState('')
   const recognitionRef = useRef(null)
   const historyRef = useRef(null)
+  useEffect(() => {
+    const controller = new AbortController()
+    fetch(`/api/ai/tools/?mode=${mode}`, { signal: controller.signal })
+      .then((response) => { if (!response.ok) throw new Error('Unavailable'); return response.json() })
+      .then((data) => { if (!controller.signal.aborted) setCapabilities(data.tools || []) })
+      .catch(() => { if (!controller.signal.aborted) setCapabilityError(true) })
+    return () => controller.abort()
+  }, [mode])
+  const generators = capabilities.filter((tool) => ['generate_image', 'generate_video'].includes(tool.name) && tool.configured)
 
   useEffect(() => {
     historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: 'smooth' })
   }, [messages, loading])
 
-  useEffect(() => () => recognitionRef.current?.stop(), [])
+  useEffect(() => () => {
+    const recognition = recognitionRef.current
+    recognitionRef.current = null
+    if (recognition) {
+      recognition.onresult = null
+      recognition.onend = null
+      recognition.onerror = null
+      recognition.onstart = null
+      recognition.abort()
+    }
+  }, [])
 
   const startListening = () => {
     const Recognition = getSpeechRecognition()
@@ -71,23 +80,48 @@ function AIChatPanel({ messages, onSend, loading, error, selectedClip, assets, l
 
   return (
     <div className="ai-panel" aria-label="AI Agent">
+      <div className="ai-mode-toggle" role="group" aria-label="AI Agent mode">
+        {Object.entries(AGENT_MODES).map(([value, config]) => (
+          <button key={value} type="button" aria-pressed={mode === value} disabled={loading}
+            title={loading ? 'Finish or cancel the current request before switching modes' : config.title}
+            onClick={() => onModeChange(value)}>{config.title}</button>
+        ))}
+      </div>
       <div className="ai-panel-header">
         <div>
-          <p className="sidebar-kicker">Editing assistant</p>
-          <h2 className="sidebar-title">AI Agent</h2>
+          <p className="sidebar-kicker">{copy.kicker}</p>
+          <h2 className="sidebar-title">{copy.title}</h2>
         </div>
         <span className="ai-panel-status" data-loading={loading}>{loading ? 'Working' : 'Ready'}</span>
       </div>
 
+      <p className="ai-mode-capabilities">
+        {mode === 'edit' ? 'Trim ? Titles ? Dimensions ? Effects ? edits use your existing media.' : 'Brief ? Scene plan ? Assemble uploaded assets'}
+      </p>
+      {mode === 'plan' && <>
+        <details className="ai-brief-summary">
+          <summary>Video brief ? {assets.length} uploaded assets</summary>
+          <dl>{[['Topic', 'subject'], ['Audience', 'audience'], ['Key message', 'key_message'], ['Duration', 'duration_seconds'], ['Format', 'format']].map(([label, field]) => (
+            <div key={field}><dt>{label}</dt><dd>{brief?.[field] ? `${brief[field]}${field === 'duration_seconds' ? ' seconds' : ''}` : field === 'duration_seconds' ? '30 seconds by default' : field === 'format' ? 'Current canvas by default' : 'Not supplied yet'}</dd></div>
+          ))}</dl>
+          <p>{assets.length ? assets.map((asset) => asset.name).join(', ') : 'Upload related images or videos using My media > Upload.'}</p>
+        </details>
+        {generators.length > 0 && <label className="ai-generate-option">
+          <input type="checkbox" checked={generateAssets} disabled={loading} onChange={(event) => onGenerateAssetsChange(event.target.checked)} />
+          <span>Generate Assets <small>Optional ? {generators.map((tool) => tool.name === 'generate_image' ? 'Images' : 'Video').join(' and ')} ? approve each paid job and preview</small></span>
+        </label>}
+        {capabilityError && <p className="ai-context-note">Service availability could not be checked. Start Django to use the agent.</p>}
+      </>}
+
       <div className="ai-examples" aria-label="Example prompts">
-        {EXAMPLE_PROMPTS.map((prompt) => (
+        {copy.prompts.map((prompt) => (
           <button key={prompt} type="button" onClick={() => setInput(prompt)} disabled={loading}>{prompt}</button>
         ))}
       </div>
 
       <div className="ai-chat-history" ref={historyRef} aria-live="polite">
         {messages.length === 0 && (
-          <p className="ai-empty">Ask me to edit your timeline. I can change clips, text, audio, dimensions, speed, and effects.</p>
+          <p className="ai-empty">{copy.empty}</p>
         )}
         {messages.map((message) => (
           <div key={message.id} className={`ai-message ${message.role}`}>
@@ -95,20 +129,15 @@ function AIChatPanel({ messages, onSend, loading, error, selectedClip, assets, l
             <p>{message.content}</p>
           </div>
         ))}
+        {progress?.results?.filter((result) => result.output?.text).map((result) => (
+          <details key={result.id} className="ai-message assistant">
+            <summary>Transcript</summary>
+            <p>{result.output.text}</p>
+          </details>
+        ))}
         {loading && <div className="ai-message assistant"><span className="ai-message-role">AI Agent</span><p>{progress?.message || 'Reading your composition...'}</p></div>}
       </div>
 
-      {progress && (
-        <div className="ai-run-progress" aria-live="polite">
-          <p>{progress.message}</p>
-          {progress.results?.length > 0 && <ol>{progress.results.map((result) => (
-            <li key={result.id}>{result.name}: {receiptLabel(result, progress.phase)}
-              {result.output?.text && <details><summary>Transcript</summary><p>{result.output.text}</p></details>}
-            </li>
-          ))}</ol>}
-          {loading && <button type="button" onClick={onCancel}>Cancel request</button>}
-        </div>
-      )}
 
       {review && (
         <section className="ai-review" role="dialog" aria-modal="false" aria-label={review.title}>
@@ -148,12 +177,13 @@ function AIChatPanel({ messages, onSend, loading, error, selectedClip, assets, l
         <textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder={listening ? 'Listening... edit the transcript before sending' : 'Describe an edit...'}
+          placeholder={listening ? 'Listening... edit the transcript before sending' : copy.placeholder}
           rows={3}
           disabled={loading}
           aria-label="AI prompt"
         />
         <div className="ai-composer-actions">
+          {loading && <button type="button" onClick={onCancel}>Cancel request</button>}
           <button type="button" className={listening ? 'ai-mic-button listening' : 'ai-mic-button'} onClick={listening ? stopListening : startListening} disabled={loading} aria-label={listening ? 'Stop listening' : 'Use microphone'} title={listening ? 'Stop listening' : 'Use microphone'}>{listening ? '■' : '●'}</button>
           <button type="submit" className="ai-send-button" disabled={loading || !input.trim()}>{loading ? 'Working...' : 'Send'}</button>
         </div>

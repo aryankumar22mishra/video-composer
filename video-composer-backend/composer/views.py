@@ -28,7 +28,10 @@ MAX_CLIP_DURATION = 1800  # 30 minutes
 
 class AgentToolsView(APIView):
     def get(self, request):
-        return Response({"tools": tool_definitions(request.query_params.get("recording_state", "idle"))})
+        try:
+            return Response({"tools": tool_definitions(request.query_params.get("recording_state", "idle"), request.query_params.get("mode"), request.query_params.get("generate_assets") == "true")})
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
 
 
 class AgentPlanView(APIView):

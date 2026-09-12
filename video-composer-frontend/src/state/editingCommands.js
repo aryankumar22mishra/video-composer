@@ -4,6 +4,7 @@ const MIN_DIMENSION = 2
 const MAX_DIMENSION = 7680
 
 import registry from '../agent/toolRegistry.json' with { type: 'json' }
+import { ASPECT_PRESETS } from '../dimensions/DimensionPresets.js'
 
 export const SUPPORTED_EDITING_TOOLS = registry.filter((tool) => ['edit', 'ui'].includes(tool.executor)).map((tool) => tool.name)
 
@@ -37,6 +38,50 @@ function finiteNumber(value, label) {
 function updateClip(clips, id, updater) {
   const index = requireClip(clips, id)
   return clips.map((clip, clipIndex) => clipIndex === index ? updater(clip) : clip)
+}
+
+const evenSide = (value) => Math.max(2, Math.round(Number(value) / 2) * 2)
+
+function parseRatioParts(ratio) {
+  const match = /^(\d{1,4})\s*:\s*(\d{1,4})$/.exec(String(ratio || '').trim())
+  if (!match) throw new Error('ratio must look like 16:9.')
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (width < 1 || height < 1) throw new Error('ratio sides must be positive numbers.')
+  return { width, height }
+}
+
+function presetRatio(preset) {
+  const source = preset.aspect !== 'custom' ? preset.aspect : preset.badge
+  const parts = String(source || '').split(':')
+  if (parts.length !== 2) return null
+  const width = Number(parts[0])
+  const height = Number(parts[1])
+  return Number.isFinite(width) && Number.isFinite(height) ? { width, height } : null
+}
+
+// Resolve a requested canvas aspect ratio ("16:9", "4:13") to concrete
+// dimensions. Dimension presets win first so known ratios land on the exact
+// same canvas the dimension box would apply; anything else scales the ratio
+// so its longer side keeps the current longer side (even-rounded for H.264).
+function resolveAspectRatio(ratio, composition) {
+  const requested = parseRatioParts(ratio)
+  for (const preset of ASPECT_PRESETS) {
+    const candidate = presetRatio(preset)
+    if (!candidate || preset.width == null || preset.height == null) continue
+    if (requested.width * candidate.height === requested.height * candidate.width) {
+      return { width: preset.width, height: preset.height }
+    }
+  }
+  const currentWidth = Math.max(MIN_DIMENSION, Math.round(Number(composition.width) || MIN_DIMENSION))
+  const currentHeight = Math.max(MIN_DIMENSION, Math.round(Number(composition.height) || MIN_DIMENSION))
+  const longSide = Math.min(MAX_DIMENSION, evenSide(Math.max(currentWidth, currentHeight)))
+  const ratioLonger = Math.max(requested.width, requested.height)
+  const ratioShorter = Math.min(requested.width, requested.height)
+  const shortSide = Math.min(MAX_DIMENSION, evenSide(longSide * ratioShorter / ratioLonger))
+  return requested.height > requested.width
+    ? { width: shortSide, height: longSide }
+    : { width: longSide, height: shortSide }
 }
 
 function sourceStart(clip) {

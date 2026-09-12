@@ -33,7 +33,7 @@ const INITIAL_STATE = {
   cameraEnabled: true,
   cameraDeviceId: '',
   cameraShape: 'circle',
-  cameraSize: 'medium',
+  cameraSize: 25,
   cameraZoom: 1,
   cameraMirror: true,
   cameraPosition: 'bottom-right',

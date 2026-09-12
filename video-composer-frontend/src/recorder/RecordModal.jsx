@@ -12,7 +12,6 @@
 
 import { useCallback, useEffect, useRef } from 'react'
 
-const SIZE_ORDER = ['small', 'medium', 'large']
 const SIZE_PERCENT = { small: 18, medium: 25, large: 32 }
 
 const SHAPE_OPTIONS = [
@@ -67,7 +66,7 @@ function RecordModal({ recorder, onClose }) {
     cameraDeviceId, setCameraDeviceId,
     cameraShape, setCameraShape,
     cameraSize, setCameraSize,
-    cameraZoom, setCameraZoom,
+    setCameraZoom,
     cameraMirror, setCameraMirror,
     cameraPosition, setCameraPosition,
     micEnabled, setMicEnabled,
@@ -80,6 +79,36 @@ function RecordModal({ recorder, onClose }) {
     reset,
   } = recorder
 
+  // Size is the only scale control; clear any zoom from an earlier setup.
+  useEffect(() => { setCameraZoom(1) }, [setCameraZoom])
+
+  const previewStageRef = useRef(null)
+  const bubbleDragRef = useRef(null)
+  const dragCamera = (event) => {
+    const drag = bubbleDragRef.current
+    const stage = previewStageRef.current
+    if (!drag || !stage) return
+    const bounds = stage.getBoundingClientRect()
+    const bubble = event.currentTarget.getBoundingClientRect()
+    const clamp = (value) => Math.max(0, Math.min(1, value))
+    setCameraPosition({
+      x: clamp((event.clientX - bounds.left - drag.x) / Math.max(1, bounds.width - bubble.width)),
+      y: clamp((event.clientY - bounds.top - drag.y) / Math.max(1, bounds.height - bubble.height)),
+    })
+  }
+  const bubbleInteraction = {
+    onPointerDown: (event) => {
+      event.preventDefault()
+      const bounds = event.currentTarget.getBoundingClientRect()
+      bubbleDragRef.current = { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
+      event.currentTarget.setPointerCapture(event.pointerId)
+    },
+    onPointerMove: dragCamera,
+    onPointerUp: () => { bubbleDragRef.current = null },
+    onPointerCancel: () => { bubbleDragRef.current = null },
+    onLostPointerCapture: () => { bubbleDragRef.current = null },
+    title: 'Drag to move your camera',
+  }
   const previewVideoRef = useRef(null)
   const cameraPreviewRef = useRef(null)
 
@@ -124,7 +153,7 @@ function RecordModal({ recorder, onClose }) {
   }
 
   // Close the modal on Escape, matching typical dialog behavior. Cancel is
-  // routed through handleCancel so any active recording is safely discarded.
+  // routed through handleCancel so any active recording keeps running.
   useEffect(() => {
     const onKeyDown = (event) => {
       if (event.key === 'Escape') handleCancel()
@@ -150,19 +179,18 @@ function RecordModal({ recorder, onClose }) {
   // --- Derived UI state -------------------------------------------------
   // Pure CSS preview: the bubble mirrors shape/size/mirror/position via
   // inline styles. The recording canvas in the hook stays authoritative.
-  const sizeIndex = Math.max(0, SIZE_ORDER.indexOf(cameraSize))
-  const sizePercent = SIZE_PERCENT[cameraSize] ?? 25
+  const sizePercent = SIZE_PERCENT[cameraSize] ?? Math.max(1, Math.min(100, Number(cameraSize) || 25))
   const bubbleStyle = {
-    width: `${sizePercent}%`,
+    width: `min(${sizePercent}cqw, 100cqh)`,
     aspectRatio: '1 / 1',
     borderRadius: SHAPE_RADIUS[cameraShape] ?? '50%',
-    ...(BUBBLE_POSITION_STYLE[cameraPosition] ?? BUBBLE_POSITION_STYLE['bottom-right']),
+    ...(typeof cameraPosition === 'object' ? { left: `${cameraPosition.x * 100}%`, top: `${cameraPosition.y * 100}%`, translate: `${-cameraPosition.x * 100}% ${-cameraPosition.y * 100}%` } : BUBBLE_POSITION_STYLE[cameraPosition] ?? BUBBLE_POSITION_STYLE['bottom-right']),
     transformOrigin: 'center center',
-    transform: `scale(${cameraZoom}) ${cameraMirror ? 'scaleX(-1)' : ''}`.trim(),
+    transform: cameraMirror ? 'scaleX(-1)' : undefined,
   }
 
   // State-driven primary footer action (single button that morphs).
-  let primaryAction = { label: '🖥 Share screen', action: handleShareScreen, disabled: false, tone: '' }
+  let primaryAction = { label: 'Choose screen & record', action: handleShareScreen, disabled: false, tone: '' }
   if (recordingState === 'requesting_permission') {
     primaryAction = { label: 'Requesting…', action: null, disabled: true, tone: '' }
   } else if (recordingState === 'ready') {
@@ -194,12 +222,13 @@ function RecordModal({ recorder, onClose }) {
       aria-modal="true"
       aria-label="Recording setup"
     >
-      <div className="record-modal">
+      <div className="record-modal record-studio">
         <header className="record-modal-header">
           <div className="record-modal-heading">
-            <h2 className="record-modal-title">Recording Setup</h2>
+            <span className="record-eyebrow">RECORDING STUDIO</span>
+            <h2 className="record-modal-title">Record your screen</h2>
             <p className="record-modal-subtitle">
-              Choose your camera, microphone, and how you want your bubble to look.
+              Make a walkthrough, capture a demo, or share an idea.
             </p>
           </div>
           <button
@@ -214,7 +243,16 @@ function RecordModal({ recorder, onClose }) {
 
         <div className="record-modal-body">
           <div className="record-preview-column">
-            <div className="record-preview-stage">
+            <div className="record-preview-heading"><span>Recording preview</span><span className="record-preview-badge">{screenStream ? 'Screen connected' : 'Set up your shot'}</span></div>
+            <div className="record-capture-options" aria-label="Recording layout">
+              <button type="button" aria-pressed={!cameraEnabled} className={!cameraEnabled ? 'is-selected' : ''} onClick={() => setCameraEnabled(false)}>
+                <ShapeIcon shape="square" /><span><strong>Screen only</strong><small>Focus on your content</small></span>
+              </button>
+              <button type="button" aria-pressed={cameraEnabled} className={cameraEnabled ? 'is-selected' : ''} disabled={!devices.cameras.length} onClick={() => setCameraEnabled(true)}>
+                <ShapeIcon shape="circle" /><span><strong>Screen + camera</strong><small>{devices.cameras.length ? 'Add a personal touch' : 'No camera detected'}</small></span>
+              </button>
+            </div>
+            <div className="record-preview-stage" ref={previewStageRef}>
               {screenStream ? (
                 <video
                   ref={previewVideoRef}
@@ -226,13 +264,16 @@ function RecordModal({ recorder, onClose }) {
               ) : (
                 <div className="record-preview-placeholder">
                   <span className="record-preview-placeholder-icon" aria-hidden>🖥</span>
-                  <p>Your shared screen will appear here.</p>
-                  <p className="record-preview-placeholder-hint">
-                    Click “Share screen” to pick a screen, window, or tab.
-                  </p>
+                  <p>Your next great take starts here.</p>
+                  <p className="record-preview-placeholder-hint">Choose a tab, window, or entire screen when you are ready.</p>
                 </div>
               )}
 
+              {cameraEnabled && !cameraStream && (
+                <div className="record-preview-bubble record-camera-placeholder" style={{ ...bubbleStyle, transform: undefined }} {...bubbleInteraction}>
+                  <ShapeIcon shape={cameraShape} /><span>Camera position</span>
+                </div>
+              )}
               {cameraStream && (
                 <video
                   ref={cameraPreviewRef}
@@ -241,6 +282,7 @@ function RecordModal({ recorder, onClose }) {
                   playsInline
                   className="record-preview-bubble"
                   style={bubbleStyle}
+                  {...bubbleInteraction}
                 />
               )}
 
@@ -259,7 +301,7 @@ function RecordModal({ recorder, onClose }) {
 
             <div className="record-position-block">
               <span className="record-field-label" id="initial-position-label">
-                Initial position
+                Camera placement ? drag the bubble to position it
               </span>
               <div
                 className="record-position-grid"
@@ -276,6 +318,7 @@ function RecordModal({ recorder, onClose }) {
                       aria-checked={isSelected}
                       className={isSelected ? 'record-position-card is-selected' : 'record-position-card'}
                       onClick={() => setCameraPosition(option.value)}
+                      disabled={!cameraEnabled}
                     >
                       <span className="record-position-cell" aria-hidden>
                         <span
@@ -294,16 +337,16 @@ function RecordModal({ recorder, onClose }) {
 
             <div className="record-messages">
               <p className="record-hint">
-                🎥 Start from the Video Composer tab (select it in Chrome's picker).
-                During recording, Chrome's sharing controls let you switch the
-                captured tab — the recording keeps running across switches.
+                Choose your devices, then select a screen in your browser's sharing dialog.
+                A countdown gives you time to get ready. Your recording will appear in the media library.
               </p>
-              {notice && <p className="message recorder-notice">{notice}</p>}
-              {error && <p className="message error">{error}</p>}
+              {notice && <p role="status" className="message recorder-notice">{notice}</p>}
+              {error && <p role="alert" className="message error">{error}</p>}
             </div>
           </div>
 
           <div className="record-settings-column">
+            <div className="record-preview-heading"><span>Make it yours</span><span className="record-preview-badge">Device settings</span></div>
             <div className="record-settings-card">
               <div className="record-settings-head">
                 <span className="record-settings-icon" aria-hidden>📹</span>
@@ -314,6 +357,7 @@ function RecordModal({ recorder, onClose }) {
                 <label className="record-toggle">
                   <input
                     type="checkbox"
+                    aria-label="Enable camera"
                     checked={cameraEnabled}
                     onChange={(event) => setCameraEnabled(event.target.checked)}
                     disabled={!devices.cameras.length}
@@ -325,9 +369,10 @@ function RecordModal({ recorder, onClose }) {
               </div>
 
               <div className={cameraEnabled ? 'record-settings-controls' : 'record-settings-controls is-disabled'}>
-                <span className="record-field-label">Camera device</span>
+                <label className="record-field-label" htmlFor="record-camera-device">Camera device</label>
                 <select
                   className="record-select"
+                  id="record-camera-device"
                   value={cameraDeviceId}
                   onChange={(event) => {
                     console.debug('[Recorder] Camera device selected:', event.target.value || '(default)')
@@ -370,32 +415,15 @@ function RecordModal({ recorder, onClose }) {
                 <div className="record-size-row">
                   <input
                     type="range"
-                    min="0"
-                    max={SIZE_ORDER.length - 1}
+                    min="1"
+                    max="100"
                     step="1"
-                    value={sizeIndex}
-                    onChange={(event) => setCameraSize(SIZE_ORDER[Number(event.target.value)])}
+                    value={sizePercent}
+                    onChange={(event) => setCameraSize(Number(event.target.value))}
                     disabled={!cameraEnabled}
                     aria-label="Webcam size"
                   />
                   <output className="record-size-value">{sizePercent}%</output>
-                </div>
-
-                <div className="record-slider-group">
-                  <div className="record-field-header">
-                    <span className="record-field-label">Zoom</span>
-                    <output className="record-size-value">{cameraZoom.toFixed(1)}x</output>
-                  </div>
-                  <input
-                    type="range"
-                    min="1"
-                    max="2.5"
-                    step="0.1"
-                    value={cameraZoom}
-                    onChange={(event) => setCameraZoom(Number(event.target.value))}
-                    disabled={!cameraEnabled}
-                    aria-label="Webcam zoom"
-                  />
                 </div>
 
                 <div className="record-toggle-row">
@@ -403,6 +431,8 @@ function RecordModal({ recorder, onClose }) {
                   <label className="record-toggle">
                     <input
                       type="checkbox"
+                      aria-label="Mirror camera horizontally"
+                    disabled={!cameraEnabled}
                       checked={cameraMirror}
                       onChange={(event) => setCameraMirror(event.target.checked)}
                     />
@@ -424,6 +454,7 @@ function RecordModal({ recorder, onClose }) {
                 <label className="record-toggle">
                   <input
                     type="checkbox"
+                    aria-label="Enable microphone"
                     checked={micEnabled}
                     onChange={(event) => setMicEnabled(event.target.checked)}
                     disabled={!devices.microphones.length}
@@ -435,9 +466,10 @@ function RecordModal({ recorder, onClose }) {
               </div>
 
               <div className={micEnabled ? 'record-settings-controls' : 'record-settings-controls is-disabled'}>
-                <span className="record-field-label">Microphone device</span>
+                <label className="record-field-label" htmlFor="record-mic-device">Microphone device</label>
                 <select
                   className="record-select"
+                  id="record-mic-device"
                   value={micDeviceId}
                   onChange={(event) => setMicDeviceId(event.target.value)}
                   disabled={!micEnabled || !devices.microphones.length}
@@ -465,11 +497,12 @@ function RecordModal({ recorder, onClose }) {
                 <span className="record-settings-icon" aria-hidden>🔊</span>
                 <div className="record-settings-text">
                   <h3 className="record-settings-title">System Audio</h3>
-                  <p className="record-settings-desc">Capture audio from the shared tab or window.</p>
+                  <p className="record-settings-desc">Enable Share audio in the browser picker when available.</p>
                 </div>
                 <label className="record-toggle">
                   <input
                     type="checkbox"
+                    aria-label="Include system audio"
                     checked={systemAudioEnabled}
                     onChange={(event) => setSystemAudioEnabled(event.target.checked)}
                   />
@@ -483,6 +516,7 @@ function RecordModal({ recorder, onClose }) {
         </div>
 
         <footer className="record-modal-footer">
+          <p className="record-footer-note"><span aria-hidden="true" />{screenStream ? "Screen connected. Ready to record." : "You choose exactly what to share."}</p>
           <button
             type="button"
             className="record-button-secondary"

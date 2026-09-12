@@ -7,6 +7,21 @@ from .planner import request_plan
 
 
 class PromotionalBriefTests(TestCase):
+    def test_creation_worded_subject_reply_preserves_goal_and_discards_speculative_calls(self):
+        with mock.patch("composer.planner.request_editing_actions") as provider:
+            provider.side_effect = lambda *args, **kw: kw["response_parser"](json.dumps({
+                "status": "clarify", "message": "Who is this for?", "calls": [{"name": "generate_video", "arguments": {}}],
+            }))
+            result = request_plan({"prompt": "Create a promotional video about AI for college, 30 seconds",
+                "composition": {}, "goal_id": "existing-goal", "goal_kind": "promotional_video",
+                "brief": {"format": "9:16"}, "pending_clarification": {"field": "subject", "question": "What subject?"}})
+        self.assertEqual(result["goal_id"], "existing-goal")
+        self.assertEqual(result["brief"]["subject"], "AI for college")
+        self.assertEqual(result["brief"]["duration_seconds"], 30)
+        self.assertEqual(result["brief"]["format"], "9:16")
+        self.assertEqual(result["pending_clarification"]["field"], "audience")
+        self.assertEqual(result["calls"], [])
+
     def test_exact_conversation_reaches_provider_with_brief_and_only_asks_for_missing_message(self):
         captured = []
 
